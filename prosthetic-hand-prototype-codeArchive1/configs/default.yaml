@@ -1,0 +1,22 @@
+includes:
+  - vision.yaml
+  - emg.yaml
+  - servo.yaml
+  - grip_mappings.yaml
+
+system:
+  # Set to false for hardware mode on Pi (setup_pi.sh overrides this)
+  mock_mode: true
+  log_level: INFO
+  control_hz: 50
+  vision_fps: 12
+  dashboard:
+    host: "0.0.0.0"
+    port: 8000
+  data:
+    sample_frames_dir: "tests/fixtures/sample_frames"
+
+grip:
+  vision_threshold: 0.5
+  safe_grip: SAFE
+  empty_palm_label: "empty_palm"

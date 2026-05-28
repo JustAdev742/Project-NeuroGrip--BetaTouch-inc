@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────
+# Servo configuration — 5x 180° 1.5 kg-cm SG90-class servos
+# ─────────────────────────────────────────────────────────────
+# Hardware: SG90 or MG90S micro servos
+#   Range: 0–180 degrees
+#   Torque: 1.5 kg-cm (SG90) / 2.2 kg-cm (MG90S)
+#   Operating voltage: 4.8–6V
+#   PWM frequency: 50 Hz (20 ms period)
+#   Pulse range: 0.5 ms (0°) to 2.5 ms (180°)
+#
+# Driver options:
+#   "mock"    — simulated (no hardware)
+#   "lgpio"   — modern Linux GPIO (Ubuntu 26.04, kernel 6.x)
+#   "rpigpio" — legacy RPi.GPIO (older Raspbian)
+#   "gpio"    — auto-detect best available backend
+# ─────────────────────────────────────────────────────────────
+
+servo:
+  driver: "mock"
+  frequency_hz: 50
+  min_pulse_ms: 0.5
+  max_pulse_ms: 2.5
+  motion_duration_ms: 500
+  torque_kg_cm: 1.5
+
+  servos:
+    thumb:
+      pin: 17
+      min_deg: 0
+      max_deg: 180
+      open_deg: 15
+      close_deg: 160
+    index:
+      pin: 27
+      min_deg: 0
+      max_deg: 180
+      open_deg: 10
+      close_deg: 170
+    middle:
+      pin: 22
+      min_deg: 0
+      max_deg: 180
+      open_deg: 10
+      close_deg: 170
+    ring:
+      pin: 23
+      min_deg: 0
+      max_deg: 180
+      open_deg: 10
+      close_deg: 170
+    pinky:
+      pin: 24
+      min_deg: 0
+      max_deg: 180
+      open_deg: 10
+      close_deg: 170

@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+	<title>NeuroGrip — AI Prosthetic Hand</title>
+	<meta name="description" content="Smartwatch dashboard for AI-assisted prosthetic hand. EMG + vision grasp intelligence with keyboard, sports, and training modes." />
+	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+	<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+	<div class="app" id="app">
+
+		<!-- ════════════════ TOP BAR ════════════════ -->
+		<header class="topbar">
+			<div class="topbar-left">
+				<div class="logo-mark">✋</div>
+				<div class="topbar-info">
+					<span class="topbar-title">NeuroGrip</span>
+					<span class="topbar-mode" id="topbar-mode">Normal</span>
+				</div>
+			</div>
+			<div class="topbar-right">
+				<div class="conn-dot" id="conn-dot" title="Connection"></div>
+				<span class="topbar-badge" id="mock-badge">LIVE</span>
+				<span class="topbar-time" id="topbar-clock">00:00</span>
+			</div>
+		</header>
+
+		<!-- ════════════════ SCREEN CONTAINER ════════════════ -->
+		<main class="screen-container" id="screen-container">
+
+			<!-- ──────── SCREEN: DASHBOARD ──────── -->
+			<section class="screen active" id="screen-dashboard">
+				<div class="dash-grid">
+					<!-- State -->
+					<div class="card card-state" id="card-state">
+						<div class="card-head">
+							<span class="card-label">SYSTEM</span>
+							<span class="state-pill" id="state-pill">IDLE</span>
+						</div>
+						<div class="state-row">
+							<div class="state-dot-lg" id="state-dot-lg"></div>
+							<div>
+								<div class="big-value" id="sys-state-text">IDLE</div>
+								<div class="sub-value"><span id="ctrl-fps">0</span> Hz · <span id="vis-fps">0</span> FPS</div>
+							</div>
+						</div>
+						<div class="error-line" id="error-line">No errors</div>
+					</div>
+
+					<!-- Detection -->
+					<div class="card card-detect">
+						<div class="card-head">
+							<span class="card-label">DETECTION</span>
+						</div>
+						<div class="detect-row">
+							<svg class="ring-svg" viewBox="0 0 100 100">
+								<circle class="ring-track" cx="50" cy="50" r="40" />
+								<circle class="ring-fill" id="ring-fill" cx="50" cy="50" r="40"
+									stroke-dasharray="251.3" stroke-dashoffset="251.3" />
+								<text class="ring-pct" x="50" y="52" id="ring-pct">0%</text>
+							</svg>
+							<div class="detect-info">
+								<div class="detect-label" id="detect-label">—</div>
+								<div class="grip-pill" id="grip-pill">OPEN</div>
+								<div class="grip-reason" id="grip-reason">—</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- Hand Viz -->
+					<div class="card card-hand">
+						<div class="card-head">
+							<span class="card-label">HAND</span>
+							<span class="card-label" id="hand-grip-tag">OPEN</span>
+						</div>
+						<div class="hand-container">
+							<svg class="hand-svg" id="hand-svg" viewBox="0 0 300 400" preserveAspectRatio="xMidYMid meet">
+								<defs>
+									<linearGradient id="finger-grad" x1="0" y1="0" x2="0" y2="1">
+										<stop offset="0%" stop-color="#00d4ff" />
+										<stop offset="100%" stop-color="#8b5cf6" />
+									</linearGradient>
+								</defs>
+								<path d="M 90 260 Q 80 200 100 170 L 200 170 Q 220 200 210 260 Q 200 310 150 330 Q 100 310 90 260"
+									fill="#1a1f35" stroke="url(#finger-grad)" stroke-width="1.5" opacity="0.8" />
+								<path d="M 100 300 Q 150 340 200 300 L 210 380 Q 150 400 90 380 Z"
+									fill="#151a2e" stroke="rgba(0,212,255,0.2)" stroke-width="1" opacity="0.5" />
+								<g id="finger-pinky"><line x1="105" y1="175" x2="95" y2="120" stroke="#00d4ff" stroke-width="7" stroke-linecap="round" class="seg1" opacity="0.6"/><line x1="95" y1="120" x2="90" y2="70" stroke="#00d4ff" stroke-width="5" stroke-linecap="round" class="seg2" opacity="0.6"/><circle cx="90" cy="70" r="4" fill="#00d4ff" opacity="0.4" class="tip"/></g>
+								<g id="finger-ring"><line x1="125" y1="172" x2="120" y2="110" stroke="#00d4ff" stroke-width="8" stroke-linecap="round" class="seg1" opacity="0.6"/><line x1="120" y1="110" x2="118" y2="50" stroke="#00d4ff" stroke-width="6" stroke-linecap="round" class="seg2" opacity="0.6"/><circle cx="118" cy="50" r="4.5" fill="#00d4ff" opacity="0.4" class="tip"/></g>
+								<g id="finger-middle"><line x1="150" y1="170" x2="150" y2="105" stroke="#00d4ff" stroke-width="9" stroke-linecap="round" class="seg1" opacity="0.6"/><line x1="150" y1="105" x2="150" y2="38" stroke="#00d4ff" stroke-width="6.5" stroke-linecap="round" class="seg2" opacity="0.6"/><circle cx="150" cy="38" r="5" fill="#00d4ff" opacity="0.4" class="tip"/></g>
+								<g id="finger-index"><line x1="175" y1="172" x2="180" y2="108" stroke="#00d4ff" stroke-width="8" stroke-linecap="round" class="seg1" opacity="0.6"/><line x1="180" y1="108" x2="183" y2="45" stroke="#00d4ff" stroke-width="6" stroke-linecap="round" class="seg2" opacity="0.6"/><circle cx="183" cy="45" r="4.5" fill="#00d4ff" opacity="0.4" class="tip"/></g>
+								<g id="finger-thumb"><line x1="95" y1="220" x2="60" y2="195" stroke="#00d4ff" stroke-width="8" stroke-linecap="round" class="seg1" opacity="0.6"/><line x1="60" y1="195" x2="35" y2="175" stroke="#00d4ff" stroke-width="6" stroke-linecap="round" class="seg2" opacity="0.6"/><circle cx="35" cy="175" r="4.5" fill="#00d4ff" opacity="0.4" class="tip"/></g>
+							</svg>
+						</div>
+						<div class="servo-bars" id="servo-bars"></div>
+					</div>
+
+					<!-- EMG -->
+					<div class="card card-emg">
+						<div class="card-head">
+							<span class="card-label">EMG SIGNAL</span>
+							<span class="emg-intent-pill" id="emg-intent-pill">REST</span>
+						</div>
+						<div class="wave-wrap">
+							<canvas class="wave-canvas" id="wave-canvas"></canvas>
+						</div>
+						<div class="emg-row">
+							<div class="emg-stat"><span class="emg-k">Signal</span><span class="emg-v" id="emg-sig">0.00</span></div>
+							<div class="emg-stat"><span class="emg-k">Quality</span><span class="emg-v" id="emg-qual">100%</span></div>
+							<div class="emg-stat"><span class="emg-k">Uptime</span><span class="emg-v" id="emg-uptime">00:00</span></div>
+						</div>
+						<div class="qual-track"><div class="qual-fill" id="qual-fill"></div></div>
+						<div class="override-section" id="override-section">
+							<span class="override-label">OVERRIDE</span>
+							<div class="override-btns" id="override-btns">
+								<button class="o-btn" data-intent="REST">REST</button>
+								<button class="o-btn" data-intent="OPEN">OPEN</button>
+								<button class="o-btn" data-intent="CLOSE">CLOSE</button>
+								<button class="o-btn" data-intent="HOLD">HOLD</button>
+								<button class="o-btn" data-intent="CANCEL">CANCEL</button>
+							</div>
+						</div>
+					</div>
+
+					<!-- Timeline -->
+					<div class="card card-timeline">
+						<div class="card-head">
+							<span class="card-label">EVENTS</span>
+						</div>
+						<div class="tl-scroll" id="tl-scroll">
+							<div class="tl-empty">Waiting for events…</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- ──────── SCREEN: WATCH ──────── -->
+			<section class="screen" id="screen-watch">
+				<div class="watch-face">
+					<div class="watch-time" id="watch-time">00:00</div>
+					<div class="watch-seconds" id="watch-secs">:00</div>
+					<div class="watch-date" id="watch-date">Thursday, May 28</div>
+					<div class="watch-status-row">
+						<div class="ws-item"><span class="ws-icon">🤖</span><span class="ws-val" id="w-mode">Normal</span></div>
+						<div class="ws-item"><span class="ws-icon">⚡</span><span class="ws-val" id="w-state">IDLE</span></div>
+						<div class="ws-item"><span class="ws-icon">📡</span><span class="ws-val" id="w-quality">100%</span></div>
+					</div>
+					<div class="watch-uptime">
+						<span class="wu-label">Session</span>
+						<span class="wu-value" id="w-uptime">00:00:00</span>
+					</div>
+				</div>
+			</section>
+
+			<!-- ──────── SCREEN: MODES ──────── -->
+			<section class="screen" id="screen-modes">
+				<h2 class="screen-title">Hand Modes</h2>
+				<p class="screen-desc">Switch between operating modes. AI vision is only used in Normal mode — all other modes respond directly to your EMG signals.</p>
+				<div class="mode-grid" id="mode-grid">
+					<button class="mode-card active" data-mode="NORMAL">
+						<span class="mode-icon">🧠</span>
+						<span class="mode-name">Normal</span>
+						<span class="mode-sub">AI + EMG</span>
+					</button>
+					<button class="mode-card" data-mode="KEYBOARD_TYPING">
+						<span class="mode-icon">⌨️</span>
+						<span class="mode-name">Typing</span>
+						<span class="mode-sub">Keyboard input</span>
+					</button>
+					<button class="mode-card" data-mode="KEYBOARD_GAMING">
+						<span class="mode-icon">🎮</span>
+						<span class="mode-name">Gaming</span>
+						<span class="mode-sub">WASD + actions</span>
+					</button>
+					<button class="mode-card" data-mode="MOUSE">
+						<span class="mode-icon">🖱️</span>
+						<span class="mode-name">Mouse</span>
+						<span class="mode-sub">Click + rest</span>
+					</button>
+					<button class="mode-card" data-mode="SPORT_BASKETBALL">
+						<span class="mode-icon">🏀</span>
+						<span class="mode-name">Basketball</span>
+						<span class="mode-sub">Palm + shoot</span>
+					</button>
+					<button class="mode-card" data-mode="SPORT_TENNIS">
+						<span class="mode-icon">🎾</span>
+						<span class="mode-name">Tennis</span>
+						<span class="mode-sub">Forehand + backhand</span>
+					</button>
+					<button class="mode-card" data-mode="SPORT_BASEBALL">
+						<span class="mode-icon">⚾</span>
+						<span class="mode-name">Baseball</span>
+						<span class="mode-sub">Bat grip</span>
+					</button>
+					<button class="mode-card" data-mode="SPORT_CRICKET">
+						<span class="mode-icon">🏏</span>
+						<span class="mode-name">Cricket</span>
+						<span class="mode-sub">V-grip bat</span>
+					</button>
+				</div>
+			</section>
+
+			<!-- ──────── SCREEN: TRAINING ──────── -->
+			<section class="screen" id="screen-training">
+				<h2 class="screen-title">Auto-Train</h2>
+				<p class="screen-desc">When the hand doesn't recognize an object, capture a photo and label it. Captured images are saved for fine-tuning the vision model.</p>
+				<div class="train-form">
+					<input type="text" class="train-input" id="train-label" placeholder="Object name (e.g. water_bottle)" autocomplete="off" />
+					<button class="train-btn" id="train-capture-btn">📸 Capture & Label</button>
+				</div>
+				<div class="train-status" id="train-status"></div>
+				<div class="train-stats" id="train-stats">
+					<div class="card-head"><span class="card-label">CAPTURED DATA</span></div>
+					<div class="train-stat-body" id="train-stat-body">No captures yet.</div>
+				</div>
+			</section>
+
+			<!-- ──────── SCREEN: GITHUB ──────── -->
+			<section class="screen" id="screen-github">
+				<h2 class="screen-title">GitHub Updates</h2>
+				<p class="screen-desc">Latest issues and releases from the project repository.</p>
+				<div class="gh-section">
+					<h3 class="gh-heading">Recent Issues</h3>
+					<div class="gh-list" id="gh-issues">
+						<div class="tl-empty">Loading…</div>
+					</div>
+				</div>
+				<div class="gh-section">
+					<h3 class="gh-heading">Releases</h3>
+					<div class="gh-list" id="gh-releases">
+						<div class="tl-empty">Loading…</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- ──────── SCREEN: GAMES ──────── -->
+			<section class="screen" id="screen-games">
+				<h2 class="screen-title">Mini Games</h2>
+				<p class="screen-desc">Quick games to test hand dexterity and response time.</p>
+				<div class="game-grid">
+					<div class="game-card" id="game-reaction">
+						<span class="game-icon">⚡</span>
+						<span class="game-name">Reaction Time</span>
+						<span class="game-desc">Test EMG response speed</span>
+					</div>
+					<div class="game-card" id="game-grip-match">
+						<span class="game-icon">🎯</span>
+						<span class="game-name">Grip Match</span>
+						<span class="game-desc">Match the target grip</span>
+					</div>
+				</div>
+				<!-- Reaction Time Game -->
+				<div class="game-panel" id="game-panel-reaction" style="display:none">
+					<div class="game-display" id="reaction-display">
+						<div class="reaction-circle waiting" id="reaction-circle">WAIT…</div>
+					</div>
+					<div class="game-result" id="reaction-result"></div>
+					<button class="game-start-btn" id="reaction-start">Start Game</button>
+				</div>
+				<!-- Grip Match Game -->
+				<div class="game-panel" id="game-panel-grip" style="display:none">
+					<div class="game-display">
+						<div class="grip-target" id="grip-target-text">Match: PINCH</div>
+						<div class="grip-current" id="grip-current-text">Your grip: OPEN</div>
+					</div>
+					<div class="game-score">Score: <span id="grip-score">0</span></div>
+					<button class="game-start-btn" id="grip-start">Start Game</button>
+				</div>
+			</section>
+
+		</main>
+
+		<!-- ════════════════ NAV BAR ════════════════ -->
+		<nav class="navbar">
+			<button class="nav-btn active" data-screen="dashboard" id="nav-dashboard">
+				<span class="nav-icon">📊</span>
+				<span class="nav-text">Dash</span>
+			</button>
+			<button class="nav-btn" data-screen="watch" id="nav-watch">
+				<span class="nav-icon">⌚</span>
+				<span class="nav-text">Watch</span>
+			</button>
+			<button class="nav-btn" data-screen="modes" id="nav-modes">
+				<span class="nav-icon">🎛️</span>
+				<span class="nav-text">Modes</span>
+			</button>
+			<button class="nav-btn" data-screen="training" id="nav-training">
+				<span class="nav-icon">📸</span>
+				<span class="nav-text">Train</span>
+			</button>
+			<button class="nav-btn" data-screen="github" id="nav-github">
+				<span class="nav-icon">🔗</span>
+				<span class="nav-text">GitHub</span>
+			</button>
+			<button class="nav-btn" data-screen="games" id="nav-games">
+				<span class="nav-icon">🎮</span>
+				<span class="nav-text">Games</span>
+			</button>
+		</nav>
+
+		<!-- ════════════════ FOOTER ════════════════ -->
+		<footer class="footer">
+			<p class="footer-cite">
+				Based on <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5325038/" target="_blank">"Automatic Grasp Selection using a Camera in a Hand Prosthesis"</a> — DeGol et al., IEEE EMBC 2016
+			</p>
+			<p class="footer-warn">⚠️ Educational prototype — not a medical device.</p>
+		</footer>
+	</div>
+
+	<script src="app.js"></script>
+</body>
+</html>

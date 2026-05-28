@@ -1,0 +1,35 @@
+[Unit]
+Description=NeuroGrip AI Prosthetic Hand Controller
+Documentation=https://github.com/your-username/prosthetic-hand-prototype
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/prosthetic-hand-prototype
+
+# Virtual environment + PYTHONPATH
+Environment="PATH=/home/pi/prosthetic-hand-prototype/.venv/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/pi/prosthetic-hand-prototype/src"
+Environment="PROSTHETIC_SERVO_DRIVER=lgpio"
+
+ExecStart=/home/pi/prosthetic-hand-prototype/.venv/bin/python3 -m app.main --config configs/default.yaml
+
+# Graceful shutdown (SIGTERM → signal handler → GPIO cleanup)
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+# Hardware access
+SupplementaryGroups=gpio i2c video
+
+# Logging to journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=neurogrip
+
+[Install]
+WantedBy=multi-user.target

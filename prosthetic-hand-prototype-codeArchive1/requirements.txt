@@ -1,0 +1,8 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+numpy>=1.26.0
+opencv-python>=4.10.0
+pyyaml>=6.0.1
+pytest>=8.2.0
+# ultralytics>=8.2.0          # Uncomment for real YOLO inference
+# adafruit-circuitpython-ads1x15>=2.2.20  # Uncomment for hardware EMG
