@@ -30,8 +30,8 @@ An intelligent prosthetic hand prototype that uses **EMG signals** for user inte
 
 ### Development (no hardware)
 ```bash
-git clone https://github.com/your-username/prosthetic-hand-prototype.git
-cd prosthetic-hand-prototype
+git clone https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc.git
+cd Project-NeuroGrip--BetaTouch-inc
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ./scripts/run_mock.sh
@@ -40,8 +40,8 @@ pip install -r requirements.txt
 
 ### Raspberry Pi (Ubuntu 26.04)
 ```bash
-git clone https://github.com/your-username/prosthetic-hand-prototype.git
-cd prosthetic-hand-prototype
+git clone https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc.git
+cd Project-NeuroGrip--BetaTouch-inc
 ./scripts/setup_pi.sh    # installs everything + systemd service
 sudo reboot              # enable I2C + camera
 sudo systemctl start prosthetic-hand

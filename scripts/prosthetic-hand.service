@@ -1,6 +1,6 @@
 [Unit]
 Description=NeuroGrip AI Prosthetic Hand Controller
-Documentation=https://github.com/your-username/prosthetic-hand-prototype
+Documentation=https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc
 After=network.target
 Wants=network.target
 

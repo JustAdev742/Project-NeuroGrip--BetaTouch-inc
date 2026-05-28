@@ -156,8 +156,8 @@ def register_routes(
 			import urllib.request
 			import json as json_mod
 
-			# Default to this project's hypothetical repo; override via config
-			repo = "your-username/prosthetic-hand-prototype"
+			# Default to this project's repo; override via config
+			repo = "JustAdev742/Project-NeuroGrip--BetaTouch-inc"
 			url = f"https://api.github.com/repos/{repo}/issues?state=all&per_page=10&sort=updated"
 			req = urllib.request.Request(url, headers={"User-Agent": "prosthetic-hand-dashboard"})
 			with urllib.request.urlopen(req, timeout=5) as resp:
@@ -184,7 +184,7 @@ def register_routes(
 			import urllib.request
 			import json as json_mod
 
-			repo = "your-username/prosthetic-hand-prototype"
+			repo = "JustAdev742/Project-NeuroGrip--BetaTouch-inc"
 			url = f"https://api.github.com/repos/{repo}/releases?per_page=5"
 			req = urllib.request.Request(url, headers={"User-Agent": "prosthetic-hand-dashboard"})
 			with urllib.request.urlopen(req, timeout=5) as resp:
