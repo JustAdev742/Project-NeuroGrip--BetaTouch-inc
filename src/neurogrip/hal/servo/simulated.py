@@ -12,6 +12,11 @@ control and safety layers actually have to cope with:
   throttling threshold, exercising the thermal safety rule.
 * **Sag under load** — a loaded tendon back-drives slightly, so "position equals
   target" is never assumed anywhere in the stack.
+* **Tendon slack** — part of the servo's travel is consumed taking up fishing
+  line before the finger moves at all, and the line is under no tension until it
+  does. This is the mechanism
+  :class:`~neurogrip.control.servo_calibration.ServoCalibrationWizard` measures,
+  so it has to exist here or the wizard could only be tested on hardware.
 
 The object being grasped is injected by :mod:`neurogrip.simulation.world`; with no
 object present the fingers travel freely to their targets.
@@ -28,7 +33,33 @@ from ...core.types import FINGER_COUNT, Finger, HandPose, clamp
 from ..base import DeviceCapability, DeviceInfo, DeviceKind
 from .base import ALL_FINGERS_MASK, FingerState, ServoBusState, ServoCalibration, ServoLimits
 
-__all__ = ["ContactModel", "SimulatedFinger", "SimulatedServoBus"]
+__all__ = ["ContactModel", "SimulatedFinger", "SimulatedServoBus", "TendonModel"]
+
+
+@dataclass(slots=True)
+class TendonModel:
+    """The *physical* tendon routing of the simulated hand.
+
+    Distinct from :class:`~neurogrip.hal.servo.base.ServoCalibration`, which is
+    what the software *believes* about the tendons. The wizard's whole job is to
+    make the second match the first, so conflating them would make the
+    calibration tests vacuous.
+
+    ``slack[i]`` is the fraction of finger ``i``'s servo travel consumed before
+    the line goes taut. Assembly variation of 5–25% is normal for a hand strung
+    by hand.
+    """
+
+    slack: list[float]
+
+    @classmethod
+    def ideal(cls) -> TendonModel:
+        """Perfectly strung tendons — no slack on any finger."""
+        return cls(slack=[0.0] * FINGER_COUNT)
+
+    @classmethod
+    def uniform(cls, slack: float) -> TendonModel:
+        return cls(slack=[clamp(slack)] * FINGER_COUNT)
 
 
 @dataclass(slots=True)
@@ -84,6 +115,13 @@ class SimulatedServoBus:
     HOLDING_CURRENT_MA = 45.0
     #: Additional current per unit of blocked-position error while stalled.
     STALL_CURRENT_GAIN = 2200.0
+    #: Current while the tendon is still slack — the motor is turning but the
+    #: line carries no load, so it draws far less than its holding current.
+    #: The *step* from this to ``HOLDING_CURRENT_MA`` at take-up is what makes
+    #: the slack boundary detectable. With ideal tendons the line is taut from
+    #: the start and this value is never used, so the plant behaves exactly as
+    #: it did before slack was modelled.
+    SLACK_CURRENT_MA = 12.0
     #: Thermal model: °C rise per amp-second, and passive cooling time constant.
     THERMAL_GAIN = 0.9
     THERMAL_TAU = 45.0
@@ -95,11 +133,13 @@ class SimulatedServoBus:
         *,
         limits: ServoLimits | None = None,
         contact: ContactModel | None = None,
+        tendons: TendonModel | None = None,
         response_lag: float = 0.02,
     ) -> None:
         self._clock = clock or RealClock()
         self._limits = limits or ServoLimits()
         self._contact = contact or ContactModel.free()
+        self._tendons = tendons or TendonModel.ideal()
         self._lag = max(1e-3, response_lag)
         self._fingers = [SimulatedFinger(finger=f) for f in Finger]
         self._calibration = {f: ServoCalibration(finger=f) for f in Finger}
@@ -251,6 +291,31 @@ class SimulatedServoBus:
         with self._lock:
             self._contact = contact
 
+    def set_tendons(self, tendons: TendonModel) -> None:
+        """Install a new tendon model — how the hand is *actually* strung."""
+        with self._lock:
+            self._tendons = tendons
+
+    def _mechanical_target(self, finger: SimulatedFinger) -> float:
+        """Finger closure the commanded target actually produces.
+
+        Two mappings in series: the host's calibration turns commanded closure
+        into servo travel, and the physical tendon turns servo travel into
+        finger motion. They cancel exactly when the calibration is correct,
+        which is the property the calibration tests assert.
+        """
+        calibration = self._calibration[finger.finger]
+        true_slack = self._tendons.slack[int(finger.finger)]
+        servo_travel = calibration.slack + finger.target * (1.0 - calibration.slack)
+        if true_slack >= 1.0:
+            return 0.0
+        return clamp((servo_travel - true_slack) / (1.0 - true_slack))
+
+    def _tendon_taut(self, finger: SimulatedFinger) -> bool:
+        calibration = self._calibration[finger.finger]
+        servo_travel = calibration.slack + finger.target * (1.0 - calibration.slack)
+        return servo_travel > self._tendons.slack[int(finger.finger)]
+
     def _step(self, dt: float) -> None:
         """Advance the plant by ``dt`` seconds."""
         # Guard against a very large dt after a pause: a 10 s jump must not
@@ -271,7 +336,8 @@ class SimulatedServoBus:
                 self._thermal(finger, dt)
                 continue
 
-            error = finger.target - finger.position
+            mechanical_target = self._mechanical_target(finger)
+            error = mechanical_target - finger.position
             # Desired velocity from a first-order response, capped both by the
             # velocity limit and by the speed from which the actuator can still
             # stop on target (v = sqrt(2·a·|e|)). Without that second cap a step
@@ -285,14 +351,14 @@ class SimulatedServoBus:
             finger.velocity += delta_v
 
             new_position = finger.position + finger.velocity * dt
-            if (new_position - finger.target) * error > 0:
+            if (new_position - mechanical_target) * error > 0:
                 # The step would carry the finger past its target; land on it.
-                new_position = finger.target
+                new_position = mechanical_target
                 finger.velocity = 0.0
 
-            if new_position >= blocked_at - 1e-6 and finger.target > blocked_at:
+            if new_position >= blocked_at - 1e-6 and mechanical_target > blocked_at:
                 # Contact: the finger cannot advance past the object surface.
-                penetration = min(0.15, (finger.target - blocked_at))
+                penetration = min(0.15, (mechanical_target - blocked_at))
                 finger.position = blocked_at + penetration * 0.05 * self._contact.stiffness
                 finger.velocity = 0.0
                 finger.stalled = True
@@ -309,9 +375,16 @@ class SimulatedServoBus:
                 finger.stalled = False
                 if finger.position in (0.0, 1.0):
                     finger.velocity = 0.0
+                # A slack tendon carries no load, so the motor draws only what it
+                # needs to turn itself until the line goes taut.
+                resting = (
+                    self.HOLDING_CURRENT_MA
+                    if self._tendon_taut(finger)
+                    else self.SLACK_CURRENT_MA
+                )
                 finger.current_ma = _approach(
                     finger.current_ma,
-                    self.HOLDING_CURRENT_MA + self.CURRENT_PER_VELOCITY * abs(finger.velocity),
+                    resting + self.CURRENT_PER_VELOCITY * abs(finger.velocity),
                     dt,
                     0.05,
                 )

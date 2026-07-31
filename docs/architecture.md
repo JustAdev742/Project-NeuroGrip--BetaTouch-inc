@@ -260,6 +260,7 @@ shows the "AI DISABLED" banner without a display attached.
 | A vision model | implement `VisionBackend`, call `register_backend` | pipeline, fusion, UI |
 | A grasp planner | implement `GraspPlanner`, add to `[ai] planners` | fusion, control |
 | A servo bus | implement `ServoBus`, add a branch to `HardwareFactory` | everything above the HAL |
+| A link type (CAN, BLE) | implement `Transport` | the driver above it |
 | An EMG front end | implement `EmgSource` | the whole EMG pipeline |
 | An object class | add a table to `config/affordances.toml` | no code |
 | A grip | add a table to `config/grasps.toml` | no code |
@@ -267,6 +268,44 @@ shows the "AI DISABLED" banner without a display attached.
 | A safety rule | implement `SafetyRule`, add it to the monitor | everything else |
 | A training exercise | implement `Exercise`, add it to `EXERCISES` | session, stats, UI |
 | A UI screen | write a `ViewModel → Scene` function, add a route | renderers |
+| A bring-up tool | add a class to `diagnostics/bringup.py`, a CLI branch | everything else |
+
+Full interface contracts — including the ones a type signature cannot express —
+are in [api.md](api.md).
+
+The claim in that table is checked rather than asserted: there are six vision
+backends and three grasp planners in the tree, and the two that came last
+(`anygrasp`, `replay`) were added without touching fusion, control or the UI.
+`AnyGraspPlanner` is the more interesting of the two, because 6-DoF grasp
+prediction is a genuinely different shape of input from planar candidates — and it
+still fits behind `GraspPlanner` unchanged.
+
+---
+
+## Wiring is the thing that rots
+
+Every layer above has a clean interface, and a clean interface is exactly what
+lets a connection go missing without anything failing to compile or to test. The
+production-readiness audit found four of these, and they share a shape worth
+naming: **a mechanism that exists, is documented, is unit-tested, and is called by
+nobody.**
+
+- `EmergencyStop.add_listener` — no registrations. A software e-stop reached the
+  controller only via the 100 Hz decision tick, so it depended on the loop that
+  might itself be what had stalled.
+- `ServoCalibration` — a full type, encoded in the wire protocol, accepted by
+  every bus implementation, and never produced or loaded by anything. The
+  `slack` field was additionally dropped on the wire.
+- `var/user.toml` — read by the config loader on every boot, written by nothing.
+- `system.name` / `system.device_id` — declared in the shipped config, read
+  nowhere.
+
+Unit tests cannot catch these; each mechanism passes its own tests throughout.
+What catches them is asking, for each interface, *who actually calls this* — and
+then writing an integration test that fails if the answer becomes "nobody" again.
+`tests/unit/test_reliability.py` and
+`TestAuditFixesInTheAssembledSystem` exist for exactly that, and are organised by
+defect rather than by module for the same reason.
 
 ---
 

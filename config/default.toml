@@ -37,6 +37,13 @@ state_timeout_s = 0.25
 # actuators by itself. See docs/protocol.md.
 watchdog_ms = 300
 
+# Reopen the link automatically if it drops (loose connector, controller reboot,
+# USB renumbering). Reconnecting restores limits and calibration but never
+# re-energises the actuators — see docs/safety.md.
+reconnect = true
+reconnect_backoff_s = 0.5
+reconnect_max_backoff_s = 8.0
+
 # Hard actuator limits, in normalised closure units per second.
 max_velocity = 2.0
 max_acceleration = 8.0
@@ -44,6 +51,43 @@ max_current_ma = 900
 max_temperature_c = 65.0
 # Absolute grip-force ceiling in [0, 1]. No mode or plan may exceed this.
 max_force = 0.85
+
+# Where the measured tendon calibration is stored. Produced by
+# `neurogrip calibrate servo`; see docs/hardware.md.
+calibration_path = "var/servo-calibration.json"
+# Identifier for the physical hand, so a calibration file is not silently
+# applied to a different unit with different tendon lengths.
+hand_id = "reference"
+
+# Per-finger servo endpoints. These are the *build spec* — how the hand was
+# assembled — not something the software discovers. Set them once against the
+# mechanism, then run the calibration wizard to measure tendon slack on top.
+# `inverted` is for a servo mounted so that increasing pulse width opens rather
+# than closes the finger.
+[servo.fingers.thumb]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.index]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.middle]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.ring]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.pinky]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
 
 # ---------------------------------------------------------------------------
 # Motion planning (always clipped to the servo limits above)
@@ -133,6 +177,13 @@ required = false
 # ---------------------------------------------------------------------------
 # Vision
 # ---------------------------------------------------------------------------
+# Replay a recorded perception stream instead of running a model. Used for
+# regression testing and for reproducing field reports; see docs/vision.md.
+[vision.replay]
+path = "data/vision/reference-bottle.jsonl"
+loop = true
+repeat = 1
+
 [vision]
 enabled = true
 # "hggd_mcu" (default) | "onnx_detector" | "mock" | "null"

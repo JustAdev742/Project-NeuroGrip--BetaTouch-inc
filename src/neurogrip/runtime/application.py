@@ -29,6 +29,7 @@ from ..control.controller import HandController
 from ..control.grips import GripLibrary
 from ..control.kinematics import HandKinematics
 from ..control.motion import MotionLimits
+from ..control.servo_calibration import ServoCalibrationSet, ServoCalibrationWizard
 from ..core.clock import Clock, RealClock
 from ..core.config import Config
 from ..core.container import ServiceRegistry
@@ -36,9 +37,12 @@ from ..core.errors import Severity
 from ..core.events import EventBus
 from ..core.lifecycle import HealthReport, HealthStatus
 from ..core.logging import get_logger
+from ..core.profiles import ProfileStore
+from ..core.runstate import RunMarker
 from ..core.state import SystemState, build_system_state_machine
 from ..core.topics import Topics
-from ..core.types import ModeId
+from ..core.types import Finger, ModeId
+from ..core.validation import validate_config
 from ..diagnostics.console import DebugConsole, build_console
 from ..diagnostics.metrics import MetricsRegistry
 from ..diagnostics.service import DiagnosticsService, build_standard_selftests
@@ -97,6 +101,16 @@ class Application:
     ui: UiService | None
     training: TrainingSession
     services: ServiceRegistry
+    #: Servo bring-up wizard. Idle unless a calibration run is in progress.
+    servo_calibration: ServoCalibrationWizard | None = None
+    #: Saved user preferences. Read at startup by the bootstrap layer.
+    profiles: ProfileStore | None = None
+    #: Unclean-shutdown detection.
+    run_marker: RunMarker | None = None
+    #: True when the previous run ended without a clean shutdown.
+    recovered_from_crash: bool = False
+    #: Where a completed servo calibration is written.
+    servo_calibration_path: str = "var/servo-calibration.json"
     console: DebugConsole | None = None
     blackbox: BlackBoxRecorder | None = None
     telemetry: TelemetryWriter | None = None
@@ -114,7 +128,29 @@ class Application:
         self._machine.fire("boot_complete")
         self.state = SystemState.SELFTEST
 
+        previous = self.run_marker.begin() if self.run_marker is not None else None
+        self.recovered_from_crash = previous is not None and previous.crashed
+
         self.services.start_all()
+
+        if previous is not None and previous.crashed:
+            # Recovery makes the next run more conservative, never less. Starting
+            # in Manual means a fault that crashes the process cannot put the
+            # hand straight back into the state that crashed it — and the user,
+            # not the software, decides when assistance comes back.
+            #
+            # After `start_all`, not before: starting the mode manager activates
+            # the configured default, which would overwrite the fallback.
+            self.modes.fall_back_to_manual("recovering from an unclean shutdown")
+            self.bus.publish(
+                Topics.UI_NOTIFICATION,
+                {
+                    "level": "warning",
+                    "text": f"{previous.describe()}. Starting in Manual mode.",
+                    "sticky": True,
+                },
+                source="application",
+            )
 
         report = self.diagnostics.selftest.run(allow_motion=False)
         self.startup_report = report
@@ -169,6 +205,10 @@ class Application:
             self.blackbox.stop()
         if self.telemetry is not None:
             self.telemetry.stop()
+        if self.run_marker is not None:
+            # Last thing before the state change: everything above this point can
+            # still fail, and a failure during shutdown is worth knowing about.
+            self.run_marker.finish()
         self.state = SystemState.SHUTDOWN
         self.bus.publish(Topics.SYSTEM_STOPPED, {}, source="application")
         log.info("shutdown complete")
@@ -224,6 +264,13 @@ class Application:
         if safety_state.estop_engaged and not hand.estop:
             self.controller.emergency_stop(safety_state.primary_reason)
 
+        if self.servo_calibration is not None and self.servo_calibration.active:
+            # Servo calibration owns the hand while it runs. Letting a mode
+            # command motion at the same time would put two writers into the
+            # queue and make the measured slack meaningless.
+            self.safety.watchdogs.kick("decision")
+            return
+
         decision = self.modes.update(
             ModeContext(
                 timestamp=now,
@@ -245,8 +292,38 @@ class Application:
 
     def control_tick(self) -> None:
         """The 200 Hz group: one actuator cycle."""
+        if self.servo_calibration is not None and self.servo_calibration.active:
+            # Stepped before the controller so the command it issues is executed
+            # on this cycle rather than the next one.
+            self.servo_calibration.update()
         self.controller.tick()
         self.safety.watchdogs.kick("control")
+
+    def checkpoint(self) -> None:
+        """Refresh the run marker. Cheap, and runs in the diagnostics group."""
+        if self.run_marker is None:
+            return
+        hand = self.controller.state
+        self.run_marker.checkpoint(
+            state=self.state.value,
+            mode=self.modes.current.value if self.modes.current else "",
+            moving=hand.moving,
+            estop=hand.estop,
+        )
+
+    def save_servo_calibration(self) -> bool:
+        """Persist a completed servo calibration and apply it without a restart."""
+        if self.servo_calibration is None or self.servo_calibration.result is None:
+            return False
+        result = self.servo_calibration.result
+        result.save(self.servo_calibration_path)
+        self.controller.set_calibration([result.get(f) for f in Finger])
+        self.bus.publish(
+            Topics.UI_NOTIFICATION,
+            {"level": "info", "text": "Servo calibration saved", "sticky": False},
+            source="application",
+        )
+        return True
 
     # -- reporting ------------------------------------------------------------
 
@@ -260,6 +337,8 @@ class Application:
     def describe(self) -> dict[str, object]:
         """Summary for ``neurogrip info`` and the System Information screen."""
         return {
+            "name": self.config.get_str("system.name", "NeuroGrip"),
+            "device_id": self.config.get_str("system.device_id", "unset"),
             "version": __version__,
             "state": self.state.value,
             "mode": self.modes.current.value if self.modes.current else "none",
@@ -275,7 +354,18 @@ class Application:
 def build_application(
     config: Config, clock: Clock | None = None, *, bus: EventBus | None = None
 ) -> Application:
-    """Construct the whole system from configuration."""
+    """Construct the whole system from configuration.
+
+    Validates the configuration first. A configuration error stops the build
+    here, before any device is opened — the alternative is a half-built system
+    holding an open serial port while it reports a problem that was knowable
+    before it started.
+    """
+    report = validate_config(config)
+    for warning in report.warnings:
+        log.warning("configuration", detail=str(warning))
+    report.raise_if_invalid()
+
     clock = clock or RealClock()
     bus = bus or EventBus(clock)
     metrics = MetricsRegistry(clock)
@@ -335,6 +425,32 @@ def build_application(
         max_temperature_c=servo_section.get_float("max_temperature_c", 65.0),
         max_force=servo_section.get_float("max_force", 0.85),
     )
+    # Endpoints come from the build spec; measured tendon slack is layered on top
+    # if a calibration run has been stored. Pushing this to the bus is what makes
+    # commanded closure mean the same thing in software and in the mechanism.
+    servo_calibration = ServoCalibrationSet.from_config(config)
+    servo_calibration_path = servo_section.get_str(
+        "calibration_path", "var/servo-calibration.json"
+    )
+    try:
+        stored = ServoCalibrationSet.load(servo_calibration_path)
+        if stored.hand_id != servo_calibration.hand_id:
+            log.warning(
+                "stored servo calibration is for a different hand; ignoring it",
+                stored=stored.hand_id,
+                expected=servo_calibration.hand_id,
+            )
+        else:
+            for finger in Finger:
+                servo_calibration.set(stored.get(finger))
+            log.info(
+                "loaded servo calibration",
+                path=servo_calibration_path,
+                age_days=round(stored.age_days, 1),
+            )
+    except Exception:
+        log.info("no stored servo calibration; using build-spec endpoints with zero slack")
+
     control_section = config.section("control")
     controller = HandController(
         hardware.servo_bus,
@@ -349,7 +465,22 @@ def build_application(
             max_jerk=control_section.get_float("max_jerk", 40.0),
             position_tolerance=control_section.get_float("position_tolerance", 0.015),
         ),
+        calibration=[servo_calibration.get(f) for f in Finger],
     )
+    servo_wizard = ServoCalibrationWizard(controller, clock, base=servo_calibration)
+
+    # Cut drive the instant the stop is triggered, on whatever thread triggered
+    # it. `decision_tick` also checks, but that is a 100 Hz backstop for stops
+    # the monitor raises on its own; an e-stop must not wait for a scheduler
+    # group that may itself be the thing that has stalled.
+    #
+    # Engage only. Listeners also fire on release, and clearing the latch is a
+    # separate, deliberately manual step — see `Application.clear_emergency_stop`.
+    def _on_estop(record) -> None:
+        if record.engaged:
+            controller.emergency_stop(record.reason)
+
+    estop.add_listener(_on_estop)
 
     # -- EMG ------------------------------------------------------------------
     emg_section = config.section("emg")
@@ -435,6 +566,11 @@ def build_application(
     models = ModelRegistry(config.get_str("ai.model_root", "models"))
     fusion = DecisionFusion(planner, clock, policy=policy_for_mode(ModeId.AI_ASSIST, config))
 
+    # -- user profiles --------------------------------------------------------
+    # The store is created even when the UI is disabled: `neurogrip profile`
+    # manages the same files, and the EMG calibration path is per user.
+    profiles = ProfileStore(config.get_str("ui.profile_path", "var/profiles"))
+
     # -- training -------------------------------------------------------------
     training = TrainingSession(
         clock,
@@ -466,6 +602,7 @@ def build_application(
         system=hardware.system,
         power=hardware.power,
         model_registry=models,
+        clock=clock,
     )
 
     # -- UI -------------------------------------------------------------------
@@ -489,6 +626,8 @@ def build_application(
             diagnostics=diagnostics,
             training=training,
             calibration=emg_service.wizard,
+            servo_calibration=servo_wizard,
+            profiles=profiles,
             software_version=__version__,
         )
 
@@ -542,6 +681,12 @@ def build_application(
         ui=ui_service,
         training=training,
         services=services,
+        servo_calibration=servo_wizard,
+        servo_calibration_path=servo_calibration_path,
+        profiles=profiles,
+        run_marker=RunMarker(
+            config.get_str("system.state_path", "var/run-state.json"), version=__version__
+        ),
         blackbox=blackbox,
         telemetry=telemetry,
     )
@@ -559,7 +704,12 @@ def build_application(
             lambda: (ui_service.tick(), watchdogs.kick("ui")),
             priority=20,
         )
-    scheduler.add("diagnostics", rates.get_float("diagnostics_hz", 2.0), diagnostics.tick, priority=10)
+    scheduler.add(
+        "diagnostics",
+        rates.get_float("diagnostics_hz", 2.0),
+        lambda: (diagnostics.tick(), application.checkpoint()),
+        priority=10,
+    )
 
     application.console = build_console(application)
     if ui_service is not None:

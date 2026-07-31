@@ -137,8 +137,94 @@ tuned against would change the hand's behaviour with no visible cause.
 |---|---|---|
 | `hggd_mcu` | detection, classification, grasp | The build's model |
 | `onnx_detector` | detection, classification | A generic YOLO-style detector — the second concrete example, proving the abstraction is not shaped around HGGD alone |
+| `anygrasp` | grasp, depth | 6-DoF poses from a point cloud. Adapter only; see below |
+| `replay` | whatever the recording holds | Replays recorded perception for regression testing |
 | `mock` | everything | Simulation, driven by scene ground truth with configurable error |
 | `null` | none | No camera, vision disabled, or a backend that failed to load |
+
+### AnyGrasp: an adapter, not an implementation
+
+AnyGrasp (Fang et al., T-RO 2023) predicts 6-DoF grasp poses from a point cloud.
+It is a strong model and a poor fit for *this* hardware, for reasons worth stating
+plainly rather than discovering during a demonstration:
+
+- **It needs a depth sensor.** The reference build has one RGB camera. Monocular
+  depth from size priors is good enough to choose a grip; it is not a point cloud.
+- **It needs a licence and a CUDA runtime**, neither of which belongs in a
+  repository that must run on a battery-powered SBC and in CI with no install
+  step.
+
+So `vision/backends/anygrasp.py` is the conversion layer and nothing else. Asking
+for it without supplying a model raises `ModelLoadError` with an actionable
+message; it does **not** silently return zero grasps, which would look identical
+to "the camera sees nothing" and get diagnosed as a hardware fault.
+
+Supply an object with a `predict` method matching `PointCloudGraspModel` and the
+conversion to `GraspCandidate` is complete and tested against a stub.
+
+The interesting part is the planner rather than the backend. **This hand has no
+powered wrist** — five servos, one per finger, and the approach direction is
+whatever the user's arm is doing. A 6-DoF planner assumes the manipulator can be
+placed in any pose it proposes, which on a prosthesis is false. So
+`ai/grasp/anygrasp.py`:
+
+- **rejects** candidates more than 60° from where the hand points — they belong
+  to a grasp the user is not making;
+- **attenuates** confidence smoothly between 18° and 60°, because users do not
+  hold their arm square to an object and penalising normal variation would make
+  assistance feel arbitrary;
+- **falls through** with `None` rather than planning badly, so the composite chain
+  reaches the affordance heuristic, which does not depend on approach geometry.
+
+Alignment is judged against the camera axis, since the camera is hand-mounted.
+`AnyGraspPlanner.hand_forward` is where a wrist IMU would be injected — the
+interface takes the direction as a parameter rather than assuming it.
+
+### Replay: testing perception, not just logic
+
+Procedural scenes test *logic* — they produce any situation on demand. They cannot
+test *perception quality*, because the ground truth is whatever the generator
+decided, so a detector regression cannot show up as a difference.
+
+A recording is a fixed sequence of what vision actually reported, captured once
+and replayed identically on every run:
+
+```toml
+[vision]
+backend = "replay"
+
+[vision.replay]
+path = "data/vision/reference-bottle.jsonl"
+loop = true
+```
+
+`data/vision/reference-bottle.jsonl` is 120 frames of a 500 ml bottle being
+approached, including the false negatives and misclassifications a real detector
+produces. Change a backend, replay it, and any difference is attributable to the
+change rather than to a different random scene.
+
+To capture one:
+
+```python
+from neurogrip.vision.backends.replay import VisionRecorder
+pipeline.recorder = VisionRecorder("var/recordings/session.jsonl", backend="hggd_mcu")
+```
+
+Recorded *after* post-processing, so a replay reproduces what the rest of the
+stack saw — tracking and filled-in depth included — rather than raw backend
+output.
+
+Two format decisions worth knowing. Playback is driven by **frame count, not
+timestamps**: a recording played under a simulated clock running 50× real time
+must yield the same sequence, and matching on time would silently skip frames.
+And each result is **re-stamped to the current clock** on the way out, because
+everything downstream judges staleness against the clock and a timestamp from
+last week is stale by any measure.
+
+The format is JSON Lines — line-oriented so a recording truncated by a power loss
+loses only its last line, and text so it can be inspected, diffed and trimmed by
+hand. Recordings are evidence, and evidence that needs a special tool to read is
+evidence nobody reads.
 
 ### The mock is allowed to cheat; the real ones are not
 

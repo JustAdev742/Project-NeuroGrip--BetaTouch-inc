@@ -184,17 +184,31 @@ See [`docs/vision.md`](docs/vision.md).
 neurogrip run          # start the system
 neurogrip simulate     # run scenarios against simulated hardware
 neurogrip diagnose     # self-tests and a health report
-neurogrip calibrate    # the guided EMG calibration wizard
 neurogrip train        # a training exercise in the terminal
 neurogrip record       # capture raw EMG to a file
 neurogrip replay       # replay a recording through the live pipeline
 neurogrip console      # interactive debug console
-neurogrip config       # print the merged configuration
 neurogrip info         # system and hardware information
+
+neurogrip config --check          # validate configuration; non-zero on error
+neurogrip profile list|use|show   # saved user preferences
+
+neurogrip calibrate emg           # the user's muscles
+neurogrip calibrate servo         # tendon slack, per finger        ⚠ moves
+neurogrip calibrate camera        # field of view from known targets
+
+neurogrip test link               # link latency, loss, framing errors
+neurogrip test range              # per-finger travel and coupling  ⚠ moves
+neurogrip test estop              # stop, de-energise, latch        ⚠ moves
 ```
 
 Every subcommand takes `--config`, `--profile`, `--set key=value` and
 `--log-level`.
+
+The `test` family is bring-up tooling, deliberately separate from `diagnose`:
+self-tests gate every startup and must be quick, while these move the hand and
+deliberately trigger the emergency stop to check it responds. See
+[installation.md](docs/installation.md) for the order to run them in.
 
 ---
 
@@ -242,17 +256,21 @@ driver over the real protocol against an in-process firmware emulator — under 
 
 | | |
 |---|---|
+| [installation.md](docs/installation.md) | From clone to running, with or without hardware |
 | [architecture.md](docs/architecture.md) | Layers, invariants, runtime model, and why each decision was made |
 | [safety.md](docs/safety.md) | The hazard analysis, the response ladder, and an honest list of this design's limits |
 | [fusion.md](docs/fusion.md) | The seven gates, walked through one at a time |
 | [emg.md](docs/emg.md) | Signal chain, calibration, intent, recording and replay |
-| [vision.md](docs/vision.md) | Backends, HGGD-MCU, tracking, depth |
+| [vision.md](docs/vision.md) | Backends, HGGD-MCU, AnyGrasp, replay, tracking, depth |
 | [modes.md](docs/modes.md) | What actually differs between the four modes |
-| [hardware.md](docs/hardware.md) | Bill of materials, wiring, assembly, tuning |
+| [hardware.md](docs/hardware.md) | Bill of materials, wiring, assembly, calibration, bring-up |
 | [protocol.md](docs/protocol.md) | NGP v1 wire format |
-| [configuration.md](docs/configuration.md) | Every setting, and the layering rules |
+| [configuration.md](docs/configuration.md) | Every setting, the layering rules, and validation |
 | [training.md](docs/training.md) | The exercises and what each one trains |
+| [api.md](docs/api.md) | The interfaces you implement to swap hardware or models |
+| [testing.md](docs/testing.md) | What the suite covers, and how to test perception |
 | [development.md](docs/development.md) | Conventions, testing strategy, how to extend |
+| [demonstration.md](docs/demonstration.md) | Showing this to someone in ten minutes |
 
 ---
 
@@ -260,6 +278,7 @@ driver over the real protocol against an in-process firmware emulator — under 
 
 Everything described here runs. The simulation harness exercises the complete
 stack end to end, and the test suite covers the safety invariants explicitly.
+392 tests pass, ruff is clean, and all five scenarios pass.
 
 Not yet done, and marked `TODO` in the code where relevant:
 
@@ -272,11 +291,15 @@ Not yet done, and marked `TODO` in the code where relevant:
   be designed and reviewed before any code can install anything onto a worn device.
 - **Grip force is estimated from motor current**, not measured. The
   current-to-force constant is nominal.
+- **Firmware calibration is not persistent** — endpoints and tendon slack live in
+  the controller's RAM and are re-sent by the host at startup and after every
+  reconnect. NVS storage is not implemented.
 - **No independent hardware safety channel.** The e-stop is software on the same
   MCU as the drive. A certifiable device needs a contactor with no software in
   the path.
 
-The last two are where anyone taking this further should start.
+The last item, and grip-force measurement, are where anyone taking this further
+should start.
 
 ## Licence
 

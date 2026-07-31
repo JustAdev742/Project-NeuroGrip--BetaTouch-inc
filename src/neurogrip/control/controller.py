@@ -22,6 +22,7 @@ directly, and there is deliberately no method that lets them.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from ..core.clock import Clock
@@ -31,7 +32,7 @@ from ..core.lifecycle import HealthReport, HealthStatus, ServiceBase
 from ..core.logging import get_logger
 from ..core.topics import Topics
 from ..core.types import Finger, HandPose, clamp
-from ..hal.servo.base import ServoBus, ServoBusState, ServoLimits
+from ..hal.servo.base import ServoBus, ServoBusState, ServoCalibration, ServoLimits
 from .force import AdaptiveGripController, GripSettings, GripState
 from .grips import GripLibrary
 from .kinematics import HandKinematics
@@ -101,10 +102,14 @@ class HandController(ServiceBase):
         motion_limits: MotionLimits | None = None,
         servo_limits: ServoLimits | None = None,
         grip_settings: GripSettings | None = None,
+        calibration: Sequence[ServoCalibration] = (),
         publish_state: bool = True,
     ) -> None:
         super().__init__()
         self._servo = servo_bus
+        #: Pushed to the bus on start. Held here rather than applied by the
+        #: caller because the controller owns every write to the actuators.
+        self._calibration = tuple(calibration)
         self._clock = clock
         self._bus = bus
         self._grips = grips or GripLibrary()
@@ -139,6 +144,7 @@ class HandController(ServiceBase):
     def on_start(self) -> None:
         self._servo.open()
         self._servo.set_limits(self._servo_limits)
+        self._push_calibration()
         state = self._servo.read_state()
         self._trajectory.sync(state.pose)
         self._commanded = state.pose
@@ -159,6 +165,38 @@ class HandController(ServiceBase):
         finally:
             self._servo.close()
             log.info("hand controller stopped")
+
+    def _push_calibration(self) -> None:
+        """Send per-finger endpoints to the controller.
+
+        A failure here is logged but not fatal: the firmware keeps its stored
+        endpoints, which are safe defaults, and the hand remains usable. Refusing
+        to start over a calibration push would turn a tuning problem into a
+        device that will not run at all.
+        """
+        for calibration in self._calibration:
+            try:
+                self._servo.set_calibration(calibration)
+            except Exception as exc:
+                log.warning(
+                    "could not push servo calibration",
+                    finger=calibration.finger.name.lower(),
+                    error=str(exc),
+                )
+        if self._calibration:
+            log.info(
+                "servo calibration applied",
+                slack={c.finger.name.lower(): round(c.slack, 3) for c in self._calibration},
+            )
+
+    def set_calibration(self, calibration: Sequence[ServoCalibration]) -> None:
+        """Replace the calibration and push it immediately.
+
+        Called after a calibration run so the new tendon slack takes effect
+        without a restart.
+        """
+        self._calibration = tuple(calibration)
+        self._push_calibration()
 
     # -- configuration --------------------------------------------------------
 

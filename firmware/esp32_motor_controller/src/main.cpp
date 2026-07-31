@@ -72,6 +72,9 @@ struct FingerRuntime {
     int8_t   temperature  = 25;
     uint16_t min_pulse_us = 1000;
     uint16_t max_pulse_us = 2000;
+    // Servo travel consumed taking up fishing-line slack before the finger
+    // moves. Measured by the host's calibration wizard; see docs/hardware.md.
+    float    slack        = 0.0f;
     bool     inverted     = false;
     bool     enabled      = false;
     bool     stalled      = false;
@@ -136,6 +139,10 @@ static void ngp_send_event(ngp_event_code_t code, uint8_t finger, uint16_t detai
 
 static uint16_t pulse_for(const FingerRuntime &finger, float closure) {
     float travel = closure < 0.0f ? 0.0f : (closure > 1.0f ? 1.0f : closure);
+    // Map [0,1] of finger motion onto [slack,1] of servo motion, so commanded
+    // closure stays linear in *finger* travel rather than in servo rotation.
+    // Must match ServoCalibration.to_pulse() on the host exactly.
+    travel = finger.slack + travel * (1.0f - finger.slack);
     if (finger.inverted) {
         travel = 1.0f - travel;
     }
@@ -412,11 +419,19 @@ static void handle_set_calibration(const uint8_t *payload, uint8_t length) {
         ngp_send_error(NGP_ERR_BAD_PARAMETER, message->finger);
         return;
     }
+    // Reject endpoints outside the range a hobby servo can accept. A bad
+    // calibration would otherwise drive the horn past its mechanical stop.
+    if (message->min_pulse_us < 500 || message->max_pulse_us > 2500 ||
+        message->min_pulse_us >= message->max_pulse_us) {
+        ngp_send_error(NGP_ERR_BAD_PARAMETER, message->finger);
+        return;
+    }
     FingerRuntime &finger = g_fingers[message->finger];
     portENTER_CRITICAL(&g_state_mux);
     finger.min_pulse_us = message->min_pulse_us;
     finger.max_pulse_us = message->max_pulse_us;
     finger.inverted     = message->inverted != 0;
+    finger.slack        = (float)message->slack / 255.0f;
     portEXIT_CRITICAL(&g_state_mux);
     // TODO(persistence): write these to NVS so a power cycle keeps them.
 }

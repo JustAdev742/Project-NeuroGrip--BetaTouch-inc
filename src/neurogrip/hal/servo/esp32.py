@@ -92,6 +92,10 @@ class Esp32ServoBus:
         self._last_positions: dict[Finger, float] = dict.fromkeys(Finger, 0.0)
         self._events: deque[tuple[EventCode, int, int]] = deque(maxlen=64)
         self._errors: deque[tuple[ErrorCode, int]] = deque(maxlen=64)
+        #: Everything the far end was told and would lose across a reboot. The
+        #: controller reboots whenever the link drops, so this is what
+        #: :meth:`resync` replays.
+        self._calibration: dict[Finger, ServoCalibration] = {}
         #: Optional sink for firmware events, wired to the event bus by the service.
         self.on_event: Callable[[EventCode, int, int], None] | None = None
         self.on_error: Callable[[ErrorCode, int], None] | None = None
@@ -165,6 +169,7 @@ class Esp32ServoBus:
         )
 
     def set_calibration(self, calibration: ServoCalibration) -> None:
+        self._calibration[calibration.finger] = calibration
         self._send(
             MessageId.SET_CALIBRATION,
             encode_set_calibration(
@@ -172,6 +177,7 @@ class Esp32ServoBus:
                 min_pulse_us=calibration.min_pulse_us,
                 max_pulse_us=calibration.max_pulse_us,
                 inverted=calibration.inverted,
+                slack=calibration.slack,
             ),
         )
 
@@ -266,6 +272,43 @@ class Esp32ServoBus:
 
     def link_stats(self) -> dict[str, int]:
         return self._parser.stats()
+
+    def resync(self) -> None:
+        """Restore controller state after the link came back.
+
+        A dropped link means the controller has almost certainly rebooted, and a
+        rebooted controller is running firmware defaults: no watchdog period, no
+        limits, no tendon calibration. Replaying them is what makes reconnection
+        a recovery rather than a downgrade.
+
+        Deliberately does *not* re-enable the drive. Coming back from a
+        disconnect is not evidence that moving is safe, and the user has not
+        asked for motion since it happened.
+        """
+        self._parser.reset()
+        with self._lock:
+            self._last_state_at = 0.0
+            self._estop_latched = False
+        self._send(MessageId.SET_WATCHDOG, encode_set_watchdog(self._watchdog_ms))
+        self._send(MessageId.SET_LIMITS, encode_set_limits(
+            max_velocity=self._limits.max_velocity,
+            max_acceleration=self._limits.max_acceleration,
+            max_current_ma=self._limits.max_current_ma,
+            max_temperature_c=int(self._limits.max_temperature_c),
+        ))
+        for calibration in self._calibration.values():
+            self._send(
+                MessageId.SET_CALIBRATION,
+                encode_set_calibration(
+                    calibration.finger,
+                    min_pulse_us=calibration.min_pulse_us,
+                    max_pulse_us=calibration.max_pulse_us,
+                    inverted=calibration.inverted,
+                    slack=calibration.slack,
+                ),
+            )
+        self._send(MessageId.PING, encode_ping(0xC0FFEE))
+        log.info("motor controller resynchronised", calibrations=len(self._calibration))
 
     # -- internals ------------------------------------------------------------
 

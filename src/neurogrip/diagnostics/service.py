@@ -168,6 +168,8 @@ def build_standard_selftests(
     system: SystemProbe,
     power: PowerSource,
     model_registry=None,
+    clock: Clock | None = None,
+    link_settle_s: float = 0.5,
 ) -> None:
     """Register the standard suite.
 
@@ -175,15 +177,36 @@ def build_standard_selftests(
     and so an integrator can register their own alongside these.
     """
 
+    def _await_telemetry() -> bool:
+        """Give an asynchronous link a moment to produce its first telemetry.
+
+        The power-on self-test runs immediately after the services start, which
+        on a serial link is well before the controller's first reply can arrive.
+        Sampling the state once and concluding "no telemetry" would fail every
+        cold start and drop the device into DEGRADED — a self-test that reports
+        a fault it created by asking too early is worse than no self-test.
+        """
+        if controller.state.comms_ok:
+            return True
+        if clock is None:
+            return False
+        deadline = clock.monotonic() + link_settle_s
+        while clock.monotonic() < deadline:
+            controller.tick()
+            if controller.state.comms_ok:
+                return True
+            clock.sleep(0.01)
+        return False
+
     def test_motor_link() -> TestResult:
-        info = controller.state
-        if not info.comms_ok:
+        if not _await_telemetry():
             return TestResult(
                 name="Motor controller link",
                 outcome=TestOutcome.FAIL,
-                message="no telemetry from the motor controller",
+                message=f"no telemetry from the motor controller within {link_settle_s:.1f} s",
                 remedy="Check the controller cable and that the board is powered.",
             )
+        info = controller.state
         return TestResult(
             name="Motor controller link",
             outcome=TestOutcome.PASS,

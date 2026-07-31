@@ -65,6 +65,8 @@ class UiService(ServiceBase):
         diagnostics=None,
         training=None,
         calibration=None,
+        servo_calibration=None,
+        profiles=None,
         software_version: str = "",
     ) -> None:
         super().__init__()
@@ -74,6 +76,12 @@ class UiService(ServiceBase):
         self._theme = theme
         self._controller = controller
         self._modes = modes
+        #: Optional :class:`~neurogrip.core.profiles.ProfileStore`. When present,
+        #: preference changes are written through immediately rather than at
+        #: shutdown — the device may lose power at any moment, and a setting the
+        #: user chose and then lost is worse than one they never had.
+        self._profiles = profiles
+        self._servo_calibration = servo_calibration
         self._safety = safety
         self._vision = vision
         self._diagnostics = diagnostics
@@ -289,6 +297,7 @@ class UiService(ServiceBase):
             self._set_mode(args[0])
         elif action == "set_theme" and args:
             self._theme = self._theme.with_mode(ThemeMode(args[0]))
+            self._remember("ui.theme", args[0])
         elif action == "estop" and self._safety is not None:
             self._safety.trigger_estop("stop button pressed", source="user:ui")
             self._show_toast("Emergency stop engaged", "danger")
@@ -335,6 +344,10 @@ class UiService(ServiceBase):
         safety_state = self._safety.state if self._safety else None
         if not self._modes.activate(mode, reason="user selected", safety=safety_state):
             self._show_toast(f"Cannot switch to {mode.label} right now", "warning")
+            return
+        # Remembered only on an explicit user choice. An automatic fallback to
+        # Manual must not overwrite the mode the user actually prefers.
+        self._remember("modes.default", mode.value)
 
     def _apply_grip(self, value: str) -> None:
         try:
@@ -361,6 +374,7 @@ class UiService(ServiceBase):
 
         updated = replace(access, **{field_name: not getattr(access, field_name)})
         self._theme = self._theme.with_accessibility(updated)
+        self._remember(f"ui.accessibility.{field_name}", getattr(updated, field_name))
         self._show_toast(
             f"{field_name.replace('_', ' ').capitalize()}: "
             f"{'on' if getattr(updated, field_name) else 'off'}",
@@ -381,7 +395,27 @@ class UiService(ServiceBase):
         from dataclasses import replace
 
         self._theme = self._theme.with_accessibility(replace(access, font_scale=scale))
+        self._remember("ui.accessibility.font_scale", round(scale, 2))
         self._show_toast(f"Text size {scale:.1f}×", "info")
+
+    def _remember(self, path: str, value: object) -> None:
+        """Persist one preference to the active user profile.
+
+        Failure is reported to the user but never raises: a read-only or full
+        filesystem must not take the interface down, and the setting is still
+        applied for this session.
+        """
+        if self._profiles is None:
+            return
+        try:
+            profile = self._profiles.active()
+            if profile is None:
+                return
+            profile.set(path, value)
+            self._profiles.save(profile)
+        except Exception as exc:
+            log.warning("could not save preference", setting=path, error=str(exc))
+            self._show_toast("Setting applied but not saved", "warning")
 
     # -- reporting ------------------------------------------------------------
 

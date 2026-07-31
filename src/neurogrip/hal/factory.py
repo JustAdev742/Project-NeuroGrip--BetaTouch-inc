@@ -43,6 +43,7 @@ from .system import (
 )
 from .transport.base import Transport
 from .transport.loopback import LoopbackTransport
+from .transport.reconnecting import ReconnectingTransport
 from .transport.serial_link import SerialTransport
 
 __all__ = ["HardwareBundle", "HardwareFactory"]
@@ -167,6 +168,10 @@ class HardwareFactory:
                 watchdog_ms=section.get_int("watchdog_ms", 300),
                 state_timeout=section.get_float("state_timeout_s", 0.25),
             )
+            if isinstance(transport, ReconnectingTransport):
+                # Replaying limits and calibration is the driver's job, but only
+                # the transport knows when the link came back.
+                transport.on_reconnect = bus.resync
             if section.get_bool("required", True):
                 return bus, None, None
             try:
@@ -182,11 +187,19 @@ class HardwareFactory:
         raise ConfigurationError(f"unknown servo driver '{driver}'")
 
     def _build_transport(self, section: Config) -> Transport:
-        return SerialTransport(
+        serial = SerialTransport(
             section.get_str("port", "/dev/ttyUSB0"),
             baudrate=section.get_int("baud", 921_600),
             rtscts=section.get_bool("rtscts", False),
             dtr_reset=section.get_bool("dtr_reset", False),
+        )
+        if not section.get_bool("reconnect", True):
+            return serial
+        return ReconnectingTransport(
+            serial,
+            self._clock,
+            initial_backoff_s=section.get_float("reconnect_backoff_s", 0.5),
+            max_backoff_s=section.get_float("reconnect_max_backoff_s", 8.0),
         )
 
     # -- EMG ------------------------------------------------------------------
@@ -218,9 +231,12 @@ class HardwareFactory:
             )
 
         if driver == "serial":
-            transport = SerialTransport(
-                section.get_str("port", "/dev/ttyACM0"),
-                baudrate=section.get_int("baud", 460_800),
+            transport = ReconnectingTransport(
+                SerialTransport(
+                    section.get_str("port", "/dev/ttyACM0"),
+                    baudrate=section.get_int("baud", 460_800),
+                ),
+                self._clock,
             )
             source: EmgSource = SerialEmgSource(
                 transport,

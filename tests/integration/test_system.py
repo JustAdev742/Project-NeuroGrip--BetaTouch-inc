@@ -319,3 +319,167 @@ class TestCalibrationEndToEnd:
         world.contract(0.9)
         _run(application, 1.5)
         assert application.controller.state.pose.max_difference(HandPose.open_hand()) < 0.05
+
+
+class TestAuditFixesInTheAssembledSystem:
+    """The audit's findings, asserted against the wired system rather than in isolation.
+
+    Every one of these covers a mechanism that existed in a module and was
+    connected to nothing. A unit test of the mechanism would have passed
+    throughout; only assembling the system shows the wire is missing.
+    """
+
+    def test_emergency_stop_reaches_the_actuators_without_the_decision_loop(
+        self, application
+    ):
+        """`EmergencyStop.add_listener` existed and nothing registered.
+
+        Before the fix, a software stop reached the controller only via
+        `decision_tick`. Here the decision group never runs, so the only path
+        that can work is the listener.
+        """
+        world = _world(application)
+        world.contract(0.9)
+        _run(application, 0.5)
+        assert application.controller.state.moving
+
+        application.safety.trigger_estop("test", source="user:ui")
+        # Deliberately tick only the control group.
+        for _ in range(40):
+            application.controller.tick()
+            application.clock.advance(0.005)
+
+        assert application.controller.state.estop
+        assert not application.controller.state.enabled
+
+    def test_servo_calibration_is_pushed_to_the_controller_at_startup(self, application):
+        """The calibration path was dead end to end before the audit."""
+        from neurogrip.core.types import Finger
+
+        pushed = application.controller._calibration
+        assert len(pushed) == len(Finger), "every finger must be calibrated at start"
+
+    def test_calibration_owns_the_hand_while_it_runs(self, application):
+        """Two writers would make the measured slack meaningless."""
+        from neurogrip.core.types import Finger
+
+        world = _world(application)
+        wizard = application.servo_calibration
+        assert wizard is not None
+        # Let telemetry arrive so the wizard's precondition check sees the drive.
+        _run(application, 0.2)
+        wizard.start((Finger.INDEX,))
+
+        # A user contraction during calibration must not command the hand.
+        world.contract(0.95)
+        for _ in range(200):
+            application.scheduler.step()
+            application.clock.advance(0.005)
+
+        assert wizard.active
+        # Every motion command in flight came from the wizard, not from a mode.
+        active = application.controller.queue.active
+        assert active is None or active.source == "servo-calibration"
+        wizard.cancel("test finished")
+
+    def test_an_invalid_configuration_refuses_to_build(self, tmp_path):
+        from neurogrip.core.errors import ConfigurationError
+
+        config = load_configuration(profile="simulation").with_overlay(
+            {"servo": {"max_force": 4.0}}, source="test"
+        )
+        with pytest.raises(ConfigurationError, match="max_force"):
+            build_application(config, SimulatedClock())
+
+    def test_a_crash_starts_the_next_run_in_manual(self, tmp_path):
+        """Recovery must be more conservative, never less."""
+        from neurogrip.core.runstate import RunMarker
+
+        state_path = tmp_path / "run-state.json"
+        stale = RunMarker(state_path, version="test")
+        stale.begin()
+        stale.checkpoint(state="active", mode="ai_assist", moving=True)
+
+        config = load_configuration(profile="simulation").with_overlay(
+            {
+                "ui": {"renderer": "null"},
+                "telemetry": {"blackbox": False},
+                "modes": {"default": "ai_assist"},
+                "system": {"state_path": str(state_path)},
+                "training": {"stats_path": str(tmp_path / "training.json")},
+                "emg": {"calibration_path": str(tmp_path / "calibration.json")},
+            },
+            source="test",
+        )
+        app = build_application(config, SimulatedClock())
+        try:
+            app.start(allow_motion=True)
+            assert app.recovered_from_crash
+            assert app.modes.current is ModeId.MANUAL
+            assert not app.modes.current.ai_enabled
+        finally:
+            app.stop()
+
+    def test_a_clean_shutdown_leaves_no_crash_flag(self, tmp_path):
+        from neurogrip.core.runstate import RunMarker
+
+        state_path = tmp_path / "run-state.json"
+        config = load_configuration(profile="simulation").with_overlay(
+            {
+                "ui": {"renderer": "null"},
+                "telemetry": {"blackbox": False},
+                "system": {"state_path": str(state_path)},
+                "training": {"stats_path": str(tmp_path / "training.json")},
+                "emg": {"calibration_path": str(tmp_path / "calibration.json")},
+            },
+            source="test",
+        )
+        app = build_application(config, SimulatedClock())
+        app.start(allow_motion=True)
+        _run(app, 1.0)
+        app.stop()
+
+        assert not RunMarker(state_path).begin().crashed
+
+    def test_user_preferences_are_reloaded_on_the_next_start(self, tmp_path):
+        """The write path that `var/user.toml` never had."""
+        from neurogrip.core.profiles import ProfileStore
+
+        store = ProfileStore(tmp_path / "profiles")
+        profile = store.active()
+        profile.set("ui.theme", "high_contrast")
+        profile.set("ui.accessibility.font_scale", 1.5)
+        store.save(profile)
+
+        config = load_configuration(profile="simulation").with_overlay(
+            store.overlay(), source="profile"
+        )
+        assert config.get_str("ui.theme") == "high_contrast"
+        assert config.get_float("ui.accessibility.font_scale") == pytest.approx(1.5)
+
+    def test_replayed_perception_drives_the_real_pipeline(self, tmp_path):
+        """A recording must exercise fusion exactly as a live backend would."""
+        config = load_configuration(profile="simulation").with_overlay(
+            {
+                "ui": {"renderer": "null"},
+                "telemetry": {"blackbox": False},
+                "vision": {
+                    "backend": "replay",
+                    "replay": {"path": "data/vision/reference-bottle.jsonl", "loop": True},
+                },
+                "training": {"stats_path": str(tmp_path / "training.json")},
+                "emg": {"calibration_path": str(tmp_path / "calibration.json")},
+            },
+            source="test",
+        )
+        app = build_application(config, SimulatedClock())
+        try:
+            app.start(allow_motion=True)
+            _run(app, 2.0)
+            assert app.vision is not None
+            latest = app.vision.latest
+            assert latest is not None
+            assert latest.backend == "replay"
+            assert any(d.label == "bottle" for d in latest.detections)
+        finally:
+            app.stop()

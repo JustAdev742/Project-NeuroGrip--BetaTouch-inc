@@ -8,12 +8,16 @@ module to ``[vision] extra_backends`` in configuration.
 
 from __future__ import annotations
 
+from .anygrasp import AnyGraspBackend, AnyGraspSettings, SixDofGrasp
 from .hggd_mcu import HggdMcuBackend, HggdMcuSettings
 from .mock import MockSettings, MockVisionBackend
 from .null import NullVisionBackend
 from .onnx_detector import OnnxDetectorBackend, OnnxDetectorSettings
+from .replay import ReplaySettings, ReplayVisionBackend, VisionRecorder
 
 __all__ = [
+    "AnyGraspBackend",
+    "AnyGraspSettings",
     "HggdMcuBackend",
     "HggdMcuSettings",
     "MockSettings",
@@ -21,4 +25,8 @@ __all__ = [
     "NullVisionBackend",
     "OnnxDetectorBackend",
     "OnnxDetectorSettings",
+    "ReplaySettings",
+    "ReplayVisionBackend",
+    "SixDofGrasp",
+    "VisionRecorder",
 ]

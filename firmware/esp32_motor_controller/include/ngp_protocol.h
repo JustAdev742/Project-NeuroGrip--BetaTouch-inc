@@ -124,6 +124,7 @@ typedef struct __attribute__((packed)) {
     uint16_t min_pulse_us;
     uint16_t max_pulse_us;
     uint8_t  inverted;
+    uint8_t  slack; /**< tendon take-up, closure units × 255 */
 } ngp_set_calibration_t;
 
 typedef struct __attribute__((packed)) {

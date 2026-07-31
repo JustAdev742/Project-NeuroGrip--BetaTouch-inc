@@ -230,11 +230,23 @@ def encode_ping(token: int = 0) -> bytes:
 
 
 def encode_set_calibration(
-    finger: Finger, *, min_pulse_us: int, max_pulse_us: int, inverted: bool
+    finger: Finger, *, min_pulse_us: int, max_pulse_us: int, inverted: bool, slack: float = 0.0
 ) -> bytes:
-    """Persist per-finger servo endpoints in the firmware's NVS."""
+    """Persist per-finger servo endpoints and tendon slack in the firmware's NVS.
+
+    ``slack`` is quantised to a byte (1/255 of full closure, ~0.4%), which is far
+    finer than the mechanism can resolve. It has to travel with the endpoints
+    rather than being applied host-side: the firmware owns the closure→pulse
+    mapping, so a host-side correction would be applied twice on hardware and
+    once in simulation.
+    """
     return struct.pack(
-        "<BHHB", int(finger), int(min_pulse_us), int(max_pulse_us), 1 if inverted else 0
+        "<BHHBB",
+        int(finger),
+        int(min_pulse_us),
+        int(max_pulse_us),
+        1 if inverted else 0,
+        max(0, min(255, int(round(slack * 255)))),
     )
 
 

@@ -76,6 +76,9 @@ class VisionPipeline:
         #: Results older than this are reported as stale to the fusion layer.
         self._max_age = max_result_age
 
+        #: Optional :class:`~neurogrip.vision.backends.replay.VisionRecorder`.
+        #: Set to capture a replayable recording of what vision reported.
+        self.recorder = None
         self._latest = VisionResult.empty(0.0, backend="none")
         self._latencies = RingBuffer(120)
         self._frame_times = RingBuffer(120)
@@ -172,6 +175,17 @@ class VisionPipeline:
 
         result = self._post_process(result)
         self._latest = result
+        if self.recorder is not None:
+            # Recorded after post-processing, so a replay reproduces what the
+            # rest of the stack actually saw — including tracking and the depth
+            # the pipeline filled in — rather than the raw backend output.
+            try:
+                self.recorder.write(result)
+            except Exception as exc:
+                log.throttled(
+                    "vision-record", "warning", "could not write recording",
+                    now=now, error=str(exc),
+                )
         return result
 
     def _post_process(self, result: VisionResult) -> VisionResult:

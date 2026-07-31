@@ -44,7 +44,6 @@ mains_hz = 50.0
 enabled = true
 driver = "opencv"
 device = 0
-backend = "v4l2"
 width = 640
 height = 480
 fps = 30.0

@@ -5,7 +5,13 @@ so that even a failure during hardware construction is properly recorded.
 
 Layer order (later wins)::
 
-    config/default.toml  →  profile file  →  user profile  →  environment  →  --set
+    config/default.toml → deployment profile → var/user.toml
+      → active user profile → environment → --set
+
+The two things called "profile" are different and both keep their names because
+both are established: a *deployment* profile (``config/simulation.toml``) selects
+which hardware the build talks to, and a *user* profile
+(:mod:`neurogrip.core.profiles`) holds one person's saved preferences.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from pathlib import Path
 
 from ..core.config import Config, ConfigLoader
 from ..core.logging import configure_logging, get_logger
+from ..core.profiles import ProfileStore
 
 __all__ = ["DEFAULT_CONFIG", "find_project_root", "load_configuration"]
 
@@ -55,6 +62,7 @@ def load_configuration(
     overrides: Sequence[str] = (),
     root: Path | None = None,
     use_environment: bool = True,
+    profiles: bool = True,
 ) -> Config:
     """Build the merged configuration and configure logging from it."""
     project_root = root or find_project_root()
@@ -71,8 +79,18 @@ def load_configuration(
     if profile:
         loader.add_file(f"config/{profile}.toml", required=True)
 
-    # A per-user profile lives outside the repository so it survives updates.
+    # Device-level overrides, hand-edited, outside the repository so they survive
+    # updates.
     loader.add_file("var/user.toml", required=False)
+
+    # The active user's saved settings. Layered after the files and before the
+    # environment, so a profile can change a preference but an operator can still
+    # override it for one run without editing anyone's profile.
+    if profiles:
+        store = ProfileStore(project_root / "var" / "profiles")
+        overlay = store.overlay()
+        if overlay:
+            loader.add_mapping(overlay, source=f"profile:{store.active_name()}")
 
     if use_environment:
         loader.add_environment()

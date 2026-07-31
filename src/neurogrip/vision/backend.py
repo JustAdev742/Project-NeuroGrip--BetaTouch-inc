@@ -136,4 +136,11 @@ def _ensure_builtins() -> None:
     if _builtins_loaded:
         return
     _builtins_loaded = True
-    from .backends import hggd_mcu, mock, null, onnx_detector  # noqa: F401  (import registers)
+    from .backends import (  # noqa: F401  (import registers)
+        anygrasp,
+        hggd_mcu,
+        mock,
+        null,
+        onnx_detector,
+        replay,
+    )

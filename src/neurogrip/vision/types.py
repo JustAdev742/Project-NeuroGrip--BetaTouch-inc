@@ -208,6 +208,13 @@ class GraspCandidate:
     source: str = ""
     #: Label of the object this grasp belongs to, when the backend knows it.
     label: str = ""
+    #: Unit approach vector in camera coordinates (+X right, +Y down, +Z forward),
+    #: for backends that predict a full 6-DoF pose rather than a planar grasp.
+    #: ``None`` from planar backends such as HGGD-MCU. Consumers must treat its
+    #: absence as "unknown", never as "straight ahead" — see
+    #: :mod:`neurogrip.ai.grasp.anygrasp` for why that distinction matters on a
+    #: hand with no powered wrist.
+    approach_vector: tuple[float, float, float] | None = None
 
     @property
     def center(self) -> tuple[float, float]:

@@ -68,8 +68,50 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("diagnose", parents=[common], help="run self-tests and report health")
 
-    calibrate = subparsers.add_parser("calibrate", parents=[common], help="run the EMG calibration wizard")
+    calibrate = subparsers.add_parser(
+        "calibrate", parents=[common], help="run a calibration wizard"
+    )
+    calibrate.add_argument(
+        "target",
+        nargs="?",
+        default="emg",
+        choices=("emg", "servo", "camera"),
+        help="emg: muscle signals | servo: tendon slack | camera: field of view",
+    )
     calibrate.add_argument("--output", help="where to save the calibration")
+    calibrate.add_argument(
+        "--finger",
+        action="append",
+        default=[],
+        help="servo only: calibrate just this finger (repeatable)",
+    )
+    calibrate.add_argument(
+        "--sample",
+        action="append",
+        default=[],
+        metavar="TARGET:DISTANCE_M:WIDTH_PX",
+        help="camera only: one measurement, e.g. card:0.30:214 (repeatable)",
+    )
+
+    test = subparsers.add_parser(
+        "test", parents=[common], help="hardware bring-up tests"
+    )
+    test.add_argument(
+        "tool",
+        choices=("link", "range", "estop", "all"),
+        help="link: communication quality | range: motor travel | estop: emergency stop",
+    )
+    test.add_argument(
+        "--samples", type=int, default=200, help="link only: number of round trips"
+    )
+
+    profile_cmd = subparsers.add_parser(
+        "profile", parents=[common], help="manage saved user profiles"
+    )
+    profile_cmd.add_argument(
+        "action", choices=("list", "show", "create", "use", "delete"), help="what to do"
+    )
+    profile_cmd.add_argument("name", nargs="?", default="", help="profile name")
 
     train = subparsers.add_parser("train", parents=[common], help="run a training exercise")
     train.add_argument("exercise", nargs="?", default="", help="exercise key")
@@ -90,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_cmd = subparsers.add_parser("config", parents=[common], help="print the merged configuration")
     config_cmd.add_argument("path", nargs="?", default="", help="print only this key or section")
+    config_cmd.add_argument(
+        "--check",
+        action="store_true",
+        help="validate instead of printing; exits non-zero on any error",
+    )
 
     subparsers.add_parser("info", parents=[common], help="print system and hardware information")
 
@@ -214,6 +261,127 @@ def command_diagnose(args: argparse.Namespace) -> int:
 
 
 def command_calibrate(args: argparse.Namespace) -> int:
+    if args.target == "servo":
+        return _calibrate_servo(args)
+    if args.target == "camera":
+        return _calibrate_camera(args)
+    return _calibrate_emg(args)
+
+
+def _calibrate_camera(args: argparse.Namespace) -> int:
+    """Solve camera field of view from measurements of a known target.
+
+    Takes measurements rather than frames, so it works with a tape measure and a
+    bank card and needs neither a camera attached nor OpenCV installed.
+    """
+    from ..core.errors import CalibrationError
+    from ..vision.calibration import REFERENCE_TARGETS, CameraCalibrationWizard
+
+    config = _load(args)
+    wizard = CameraCalibrationWizard(
+        config.get_int("camera.width", 640), config.get_int("camera.height", 480)
+    )
+
+    if not args.sample:
+        print("Measure a target of known width at several distances, then pass each as")
+        print("  --sample TARGET:DISTANCE_M:WIDTH_PX\n")
+        print("Known targets:")
+        for name, width in REFERENCE_TARGETS.items():
+            print(f"  {name:<8} {width * 1000:6.1f} mm wide")
+        print("\nExample:")
+        print("  neurogrip calibrate camera --sample card:0.20:214 \\")
+        print("                             --sample card:0.35:122 \\")
+        print("                             --sample card:0.50:86")
+        return 2
+
+    try:
+        for raw in args.sample:
+            parts = raw.split(":")
+            if len(parts) != 3:
+                print(f"malformed sample {raw!r}; want TARGET:DISTANCE_M:WIDTH_PX", file=sys.stderr)
+                return 2
+            wizard.add_measurement(parts[0], float(parts[1]), float(parts[2]))
+        calibration = wizard.solve()
+    except (CalibrationError, ValueError) as exc:
+        print(f"calibration failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\n  {calibration.describe()}")
+    print("\n  per-sample distance error:")
+    for label, error in wizard.residuals(calibration):
+        print(f"    {label:<28} {error * 100:+6.1f} cm")
+
+    if not calibration.is_trustworthy:
+        print(f"\n  ! {calibration.notes}")
+    print(
+        f"\n  Set camera.fov_deg = {calibration.horizontal_fov_deg:.1f} "
+        f"(currently {config.get_float('camera.fov_deg', 62.0):.1f})"
+    )
+    if args.output:
+        calibration.save(args.output)
+        print(f"  saved to {args.output}")
+    return 0 if calibration.is_trustworthy else 1
+
+
+def _calibrate_servo(args: argparse.Namespace) -> int:
+    """Measure per-finger tendon slack by driving each finger under low force."""
+    from ..control.servo_calibration import ServoCalibrationPhase
+    from ..core.types import Finger
+
+    config = _load(args)
+    application = build_application(config)
+    if application.servo_calibration is None:
+        print("no servo calibration wizard is configured", file=sys.stderr)
+        return 2
+
+    if not application.start(allow_motion=True):
+        print("startup was refused; cannot calibrate", file=sys.stderr)
+        return 2
+
+    try:
+        fingers = None
+        if args.finger:
+            try:
+                fingers = tuple(Finger[name.upper()] for name in args.finger)
+            except KeyError:
+                names = ", ".join(f.name.lower() for f in Finger)
+                print(f"unknown finger; choose from: {names}", file=sys.stderr)
+                return 2
+
+        wizard = application.servo_calibration
+        print("\nServo calibration — the hand will move one finger at a time.\n")
+        wizard.start(fingers)
+
+        last_title = ""
+        while not wizard.progress().finished:
+            application.scheduler.step()
+            if isinstance(application.clock, SimulatedClock):
+                application.clock.advance(0.005)
+            progress = wizard.progress()
+            title = f"{progress.title} · {progress.instruction}"
+            if title != last_title and progress.instruction:
+                last_title = title
+                print(f"  ▸ {title}")
+
+        print()
+        for result in wizard.results:
+            symbol = "✓" if result.ok else "✗"
+            print(f"  {symbol} {result.describe()}")
+
+        if wizard.phase is ServoCalibrationPhase.FAILED:
+            print("\n  ✗ Calibration failed — fix the mechanical problems above and re-run.")
+            return 1
+
+        path = args.output or application.servo_calibration_path
+        application.servo_calibration_path = path
+        if application.save_servo_calibration():
+            print(f"\n  ✓ Saved to {path}")
+        return 0
+    finally:
+        application.stop()
+
+
+def _calibrate_emg(args: argparse.Namespace) -> int:
     from ..emg.calibration import CalibrationPhase
 
     config = _load(args)
@@ -256,6 +424,102 @@ def command_calibrate(args: argparse.Namespace) -> int:
         return 0
     finally:
         application.services.stop_all()
+
+
+def command_test(args: argparse.Namespace) -> int:
+    """Run hardware bring-up tests.
+
+    Separate from ``diagnose``, which gates startup and must be quick. These move
+    the hand and deliberately trigger the emergency stop, so they are opt-in.
+    """
+    from ..diagnostics.bringup import EstopTester, LinkTester, RangeTester
+
+    config = _load(args)
+    application = build_application(config)
+
+    tools = ("link", "range", "estop") if args.tool == "all" else (args.tool,)
+    needs_motion = any(t in ("range", "estop") for t in tools)
+
+    if not application.start(allow_motion=needs_motion):
+        print("startup was refused; cannot run bring-up tests", file=sys.stderr)
+        return 2
+
+    failures = 0
+    try:
+        for tool in tools:
+            if tool == "link":
+                report = LinkTester(
+                    application.hardware.servo_bus, application.clock, samples=args.samples
+                ).run()
+            elif tool == "range":
+                report = RangeTester(application.controller, application.clock).run()
+            else:
+                report = EstopTester(
+                    application.controller, application.safety, application.clock
+                ).run()
+
+            print(f"\n{report.summary()}")
+            for line in report.describe():
+                print(line)
+            if not report.ok:
+                failures += 1
+    finally:
+        application.stop()
+
+    if failures:
+        print(f"\n{failures} tool(s) reported failures", file=sys.stderr)
+    return 1 if failures else 0
+
+
+def command_profile(args: argparse.Namespace) -> int:
+    """Manage saved user profiles."""
+    from ..core.errors import ConfigurationError
+    from ..core.profiles import ProfileStore
+
+    config = _load(args)
+    store = ProfileStore(config.get_str("ui.profile_path", "var/profiles"))
+    active = store.active_name()
+
+    try:
+        if args.action == "list":
+            names = store.names()
+            if not names:
+                print("no profiles yet; one is created on first use")
+                return 0
+            for name in names:
+                marker = "*" if name == active else " "
+                profile = store.load(name)
+                print(f" {marker} {name:<16} {profile.display_name:<20} "
+                      f"{len(profile.settings)} setting(s)")
+            return 0
+
+        if not args.name:
+            print(f"{args.action} needs a profile name", file=sys.stderr)
+            return 2
+
+        if args.action == "show":
+            profile = store.load(args.name)
+            print(f"{profile.name} ({profile.display_name})")
+            for path, value in sorted(profile.settings.items()):
+                print(f"  {path:<36} {value}")
+            return 0
+
+        if args.action == "create":
+            store.create(args.name)
+            print(f"created {args.name}")
+            return 0
+
+        if args.action == "use":
+            store.set_active(args.name)
+            print(f"active profile is now {args.name}")
+            return 0
+
+        store.delete(args.name)
+        print(f"deleted {args.name}")
+        return 0
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 def command_train(args: argparse.Namespace) -> int:
@@ -399,6 +663,23 @@ def command_config(args: argparse.Namespace) -> int:
     import json
 
     config = _load(args)
+
+    if args.check:
+        from ..core.validation import validate_config
+
+        report = validate_config(config)
+        for issue in report.issues:
+            stream = sys.stderr if issue.severity.value == "error" else sys.stdout
+            print(str(issue), file=stream)
+        if report.ok:
+            print(
+                f"configuration OK ({len(report.warnings)} warning(s)) — "
+                f"sources: {', '.join(config.sources) or 'built-in defaults'}"
+            )
+            return 0
+        print(f"\n{len(report.errors)} error(s) must be fixed before starting", file=sys.stderr)
+        return 2
+
     data = config.section(args.path).as_dict() if args.path else config.as_dict()
     print(json.dumps(data, indent=2, default=str))
     print(f"\n# sources: {', '.join(config.sources) or 'built-in defaults'}", file=sys.stderr)
@@ -422,6 +703,8 @@ COMMANDS = {
     "simulate": command_simulate,
     "diagnose": command_diagnose,
     "calibrate": command_calibrate,
+    "test": command_test,
+    "profile": command_profile,
     "train": command_train,
     "record": command_record,
     "replay": command_replay,

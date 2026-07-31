@@ -16,10 +16,16 @@ config/default.toml          the shipped baseline
 config/grasps.toml           grip presets (tuning data)
 config/affordances.toml      object handling policy (tuning data)
 config/<profile>.toml        --profile simulation | hardware
-var/user.toml                per-user tuning, survives updates
+var/user.toml                device-level tuning, hand-edited, survives updates
+var/profiles/<name>.json     the active user's saved preferences
 NEUROGRIP__SECTION__KEY      environment
 --set section.key=value      command line
 ```
+
+Two things are called "profile" and both keep their names because both are
+established. A *deployment* profile (`config/simulation.toml`) selects which
+hardware the build talks to. A *user* profile (`var/profiles/alice.json`) holds
+one person's preferences. They sit at different layers and never interact.
 
 Nested tables merge key by key; every other type — including lists — is replaced
 wholesale, which is what makes "override the enabled channel list" behave as
@@ -28,6 +34,7 @@ expected.
 ```bash
 neurogrip config                        # print the merged result
 neurogrip config servo                  # just one section
+neurogrip config --check                # validate; exits non-zero on error
 neurogrip run --set control.max_velocity=1.2 --set logging.level=DEBUG
 NEUROGRIP__SERVO__PORT=/dev/ttyUSB1 neurogrip run
 ```
@@ -35,6 +42,75 @@ NEUROGRIP__SERVO__PORT=/dev/ttyUSB1 neurogrip run
 Environment and CLI values are parsed with TOML scalar rules, so `true`, `12`,
 `1.5` and `"text"` all work; a bare string such as `/dev/ttyUSB0` needs no
 quoting.
+
+## Validation
+
+Layered configuration has one dangerous property: every lookup has a default, so
+a misspelled key is indistinguishable from an absent one. `max_forse = 0.4` does
+not fail — it is ignored, and the hand runs at the 0.85 default. On a device that
+squeezes things, silently ignoring a force limit is the worst failure mode a typo
+could have.
+
+`neurogrip config --check` runs three classes of check, and so does startup:
+
+**Type and range.** `servo.max_force = 2.5` is not a valid force. Bounds are
+"physically implausible" limits, not preferences — outside them is a mistake
+rather than an unusual choice.
+
+**Unknown keys.** Reported as *warnings*, not errors, because deployment profiles
+legitimately carry keys a given build does not know about, and the known-path
+list is maintained by hand and will lag the code.
+
+**Cross-field consistency.** The valuable ones. Each corresponds to a failure
+that is obvious in hindsight and baffling at the time:
+
+| Check | Why it matters |
+|---|---|
+| Watchdog ≥ 2 × the period it guards | A shorter one trips on every healthy cycle |
+| `servo.watchdog_ms` ≥ 3 control periods | The firmware would safe the drive during normal operation |
+| `emg.offset_threshold` < `onset_threshold` | Inverted hysteresis makes activation chatter at the threshold |
+| `emg.band_high_hz` < Nyquist | A band edge above half the sample rate is not a filter |
+| `control.max_*` ≤ `servo.max_*` | The actuator limit wins, so a higher host limit is merely misleading (warning) |
+| `fusion.max_intent_age_s` ≤ 2 × EMG watchdog | A stale intent could outlive the detection of a dead electrode (warning) |
+| `runtime.vision_hz` ≤ camera fps | The pipeline would re-process frames it has already seen (warning) |
+
+Errors refuse the boot, before any device is opened — the alternative is a
+half-built system holding an open serial port while it reports a problem that was
+knowable beforehand. Warnings are logged and shown on the diagnostics screen.
+
+All issues are collected in one pass, so a single run tells you everything that
+needs fixing.
+
+## User profiles
+
+Preferences follow the person, not the device. Two people sharing a hand need two
+EMG calibrations and two sets of accessibility settings, and switching between
+them must not mean recalibrating.
+
+```bash
+neurogrip profile list
+neurogrip profile create alice
+neurogrip profile use alice
+neurogrip profile show alice
+```
+
+Changes made in the touchscreen UI — theme, text size, reduce motion, high
+contrast, preferred mode — are written through to the active profile immediately,
+not at shutdown. The device may lose power at any moment, and a setting the user
+chose and then lost is worse than one they never had.
+
+A profile may only carry preferences. The allowed prefixes are `ui.theme`,
+`ui.accessibility.*`, `modes.default`, `emg.calibration_path` and `training.*`;
+anything else is refused on save. Without that restriction a UI bug could persist
+an arbitrary override — including a safety limit — into a file loaded on every
+boot.
+
+Servo calibration is deliberately *not* here: tendon slack belongs to the hand,
+not to whoever is wearing it, so it lives in `var/servo-calibration.json` with a
+`hand_id` that stops it being applied to a different unit.
+
+A corrupt profile file costs the user their preferences and nothing else — the
+store skips it, falls back, and starts.
 
 ## Safety constraint
 

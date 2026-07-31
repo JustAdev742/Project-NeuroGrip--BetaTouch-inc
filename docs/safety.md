@@ -101,8 +101,20 @@ Four independent ways to stop, in order of latency:
 |---|---|---|
 | EMG cancel (co-contraction) | ~40 ms + one control cycle | The user, hands-free |
 | On-screen STOP | one UI frame + one control cycle | The user, deliberately |
-| Safety-triggered e-stop | one decision cycle (10 ms) | Any critical fault |
+| Safety-triggered e-stop | synchronous with the trigger | Any critical fault |
 | Firmware watchdog | 250–300 ms | Host silence, whatever the cause |
+
+`EmergencyStop` notifies registered listeners synchronously, and the controller is
+one of them, so triggering a stop cuts drive on whatever thread triggered it. The
+check in `decision_tick` remains as a 100 Hz backstop for stops the monitor raises
+on its own — but an emergency stop must not wait for a scheduler group that may
+itself be the thing that has stalled.
+
+That listener registration is exactly the kind of wiring that goes missing
+silently: the mechanism existed and nothing used it until the production-readiness
+audit, so `neurogrip test estop` and
+`test_emergency_stop_reaches_the_actuators_without_the_decision_loop` now both
+fail if it is ever removed again.
 
 The cancel gesture bypasses the normal dwell machinery entirely: it is checked
 before intent freshness and before the confidence gate, because an abort must
@@ -160,6 +172,41 @@ The host-side watchdogs are a second, independent layer:
 Verified by `test_firmware_watchdog_safes_the_hand_when_the_host_goes_quiet`,
 which runs the production driver against the firmware emulator over the real
 protocol.
+
+### Recovering from a host failure
+
+Two mechanisms, both deliberately conservative.
+
+**A dropped link reconnects, but does not re-arm.** USB serial fails for reasons
+that have nothing to do with software: a connector works loose, a hub browns out,
+the CDC driver renumbers the device, the controller reboots after a power glitch.
+`ReconnectingTransport` reopens the link with exponential backoff (0.5 s to 8 s)
+and then calls `Esp32ServoBus.resync`, which replays the watchdog period, the
+limits and the tendon calibration — a rebooted controller is running firmware
+defaults, and reconnecting without restoring them would be a downgrade rather
+than a recovery.
+
+Reconnection never re-energises the actuators. Coming back from a disconnect is
+not evidence that moving is safe, the user has not asked for motion since it
+happened, and the firmware watchdog has already safed the drive by the time
+anyone noticed.
+
+**An unclean shutdown makes the next run more conservative.** A run marker in
+`var/run-state.json` is claimed at startup and cleared on a clean stop, so the
+next start can tell that the previous one never recorded an ending. When it
+detects that, the system:
+
+- comes up in **Manual mode with the AI disabled**, regardless of the configured
+  default;
+- tells the user what happened, including whether the hand was in motion at the
+  last checkpoint;
+- waits for the user to re-enable assistance.
+
+That direction matters. A fault that crashes the process must not put the hand
+straight back into the state that crashed it, which is exactly what a
+`Restart=on-failure` service unit would otherwise do several times a second.
+Nothing attempts to *resume* what was in progress: the hand is a limb, the user's
+arm has moved, and whatever was in front of the camera is gone.
 
 ---
 
@@ -238,6 +285,16 @@ case:
 - **Thermal model is not validated** against the real actuators.
 - **The intent classifier is not personalised** by default. The threshold
   classifier works for everyone reasonably and for nobody optimally.
+- **Firmware calibration is not persistent.** Endpoints and tendon slack live in
+  RAM on the controller and are re-sent by the host at startup and after every
+  reconnect. That is correct but not robust: a controller that reboots while the
+  host is unresponsive runs on defaults until the host notices.
+  (`TODO(persistence)` in `firmware/.../main.cpp`.)
+- **The emergency stop is tested, not continuously monitored.**
+  `neurogrip test estop` verifies the whole path — stop, de-energise, latch — but
+  only when someone runs it. There is no periodic self-check that the path is
+  still intact, and no way to detect a stop that has silently stopped working
+  between tests.
 
 Anyone taking this beyond a prototype should start with the second and third
 items.

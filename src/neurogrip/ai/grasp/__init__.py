@@ -17,12 +17,14 @@ from ...control.kinematics import HandKinematics
 from ...core.config import Config
 from ...core.logging import get_logger
 from ..objects import AffordanceDatabase
+from .anygrasp import AnyGraspPlanner
 from .base import GraspContext, GraspPlan, GraspPlanner, PlanSource
 from .composite import CompositeGraspPlanner
 from .heuristic import HeuristicGraspPlanner
 from .hggd import HggdGraspPlanner
 
 __all__ = [
+    "AnyGraspPlanner",
     "CompositeGraspPlanner",
     "GraspContext",
     "GraspPlan",
@@ -39,8 +41,14 @@ log = get_logger(__name__)
 
 PlannerFactory = Callable[[GripLibrary, AffordanceDatabase, HandKinematics], GraspPlanner]
 
+#: Planner name → factory. Order in ``[ai] planners`` decides priority, not this
+#: mapping. Register additional planners with :func:`register_planner`; nothing
+#: in the stack below this module knows which one produced a plan.
 _REGISTRY: dict[str, PlannerFactory] = {
     "hggd": lambda grips, affordances, kinematics: HggdGraspPlanner(grips, affordances, kinematics),
+    "anygrasp": lambda grips, affordances, kinematics: AnyGraspPlanner(
+        grips, affordances, kinematics
+    ),
     "heuristic": lambda grips, affordances, kinematics: HeuristicGraspPlanner(
         grips, affordances, kinematics
     ),
