@@ -1,0 +1,83 @@
+## Hardware profile — the reference NeuroGrip build.
+##
+##   neurogrip run --config config/hardware.toml
+##
+## Reference platform (see docs/hardware.md):
+##   host    Raspberry Pi 4B / CM4, 64-bit Linux
+##   motors  5 × metal-gear micro servo, tendon-driven, ESP32-S3 controller
+##   EMG     2-channel differential front end → ADS1256 → ESP32 → USB CDC
+##   camera  Pi Camera Module 3 (or any V4L2 device)
+##   display 800×480 capacitive touchscreen
+
+[hardware]
+simulate = false
+
+[servo]
+driver = "esp32"
+port = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit-if00"
+baud = 921600
+required = true
+watchdog_ms = 250
+state_timeout_s = 0.2
+
+# Tuned for the reference actuators. Raising these is a mechanical decision, not
+# a software one — see docs/hardware.md before changing them.
+max_velocity = 2.0
+max_acceleration = 8.0
+max_current_ma = 900
+max_temperature_c = 65.0
+max_force = 0.85
+
+[emg]
+driver = "serial"
+port = "/dev/serial/by-id/usb-BetaTouch_EMG_Frontend-if00"
+baud = 460800
+required = true
+sample_rate_hz = 1000.0
+adc_reference_v = 5.0
+adc_bits = 24
+amplifier_gain = 1000.0
+# Set to 60.0 in the Americas and parts of Asia.
+mains_hz = 50.0
+
+[camera]
+enabled = true
+driver = "opencv"
+device = 0
+backend = "v4l2"
+width = 640
+height = 480
+fps = 30.0
+fov_deg = 66.0
+required = false
+
+[vision]
+enabled = true
+backend = "hggd_mcu"
+
+[vision.hggd_mcu]
+model_path = "models/hggd_mcu/hggd_mcu_int8.onnx"
+# Two threads leaves headroom for the 200 Hz control loop on a quad-core Pi.
+threads = 2
+
+[ui]
+renderer = "tk"
+width = 800
+height = 480
+fullscreen = true
+theme = "dark"
+
+[runtime]
+control_hz = 200.0
+emg_hz = 200.0
+decision_hz = 100.0
+vision_hz = 20.0
+ui_hz = 15.0
+diagnostics_hz = 2.0
+
+[logging]
+level = "INFO"
+file = "var/logs/neurogrip.jsonl"
+
+[telemetry]
+blackbox = true

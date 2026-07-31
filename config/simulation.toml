@@ -1,0 +1,68 @@
+## Simulation profile — the whole stack with no hardware attached.
+##
+##   neurogrip run --config config/simulation.toml
+##
+## Every peripheral is simulated, but nothing above the HAL is: the real EMG
+## filters, the real vision pipeline, the real fusion gates, the real controller
+## and the real safety rules all run exactly as they do on hardware.
+##
+## Used by CI, by the integration tests, and for development.
+
+[hardware]
+simulate = true
+
+[servo]
+# The "emulator" driver runs the production ESP32 driver and the real NGP wire
+# protocol against an in-process firmware emulator, so framing, CRC, sequencing
+# and the firmware watchdog are all genuinely exercised.
+driver = "emulator"
+emulator_latency_s = 0.001
+watchdog_ms = 300
+
+[emg]
+driver = "simulated"
+sample_rate_hz = 1000.0
+mains_hz = 50.0
+calibration_path = "var/sim-calibration.json"
+
+[camera]
+enabled = true
+driver = "simulated"
+width = 160
+height = 120
+fps = 30.0
+
+[camera.scene]
+label = "bottle"
+shape = "cylinder"
+distance_m = 0.32
+
+[vision]
+enabled = true
+# The mock backend derives detections from the simulated scene's ground truth
+# with configurable error. Switch to "hggd_mcu" to exercise the real decoding
+# path against the classical fallback session.
+backend = "mock"
+
+[vision.mock]
+confidence_noise = 0.05
+false_negative_rate = 0.05
+label_error_rate = 0.03
+latency_ms = 4.0
+
+[ui]
+# Text renderer: works over SSH and in CI.
+renderer = "text"
+fullscreen = false
+
+[logging]
+level = "INFO"
+file = ""
+
+[telemetry]
+blackbox = true
+blackbox_dir = "var/sim-blackbox"
+enabled = false
+
+[training]
+stats_path = "var/sim-training.json"

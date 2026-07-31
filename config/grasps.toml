@@ -1,0 +1,93 @@
+## Grip preset library.
+##
+## Each entry maps a grasp type onto per-finger closure (0 = open, 1 = closed),
+## a force ceiling and a speed multiplier. These are DATA: retuning them for a
+## different hand geometry requires no code change.
+##
+## `preshape` is an intermediate pose the hand passes through on the way in —
+## used to open the aperture before closing, so the object is approached rather
+## than swept aside.
+##
+## `force` is a ceiling, not a setpoint. The applied force is the lowest of:
+## this value, the object's affordance limit, the mode's ceiling, the safety
+## derate, and the user's own effort.
+
+[grasps.open]
+pose = { thumb = 0.0, index = 0.0, middle = 0.0, ring = 0.0, pinky = 0.0 }
+force = 0.25
+speed = 1.15
+description = "Fully extended — the safe default and the release pose."
+
+[grasps.relaxed]
+pose = { thumb = 0.18, index = 0.22, middle = 0.22, ring = 0.20, pinky = 0.18 }
+force = 0.20
+speed = 0.80
+description = "Natural resting curl, so the hand does not look conspicuously rigid."
+
+[grasps.power]
+pose = { thumb = 0.85, index = 0.90, middle = 0.92, ring = 0.90, pinky = 0.86 }
+preshape = { thumb = 0.10, index = 0.15, middle = 0.15, ring = 0.15, pinky = 0.15 }
+force = 0.75
+speed = 1.00
+critical_fingers = ["thumb", "index", "middle"]
+description = "Whole-hand wrap. The default when the object is unknown."
+
+[grasps.cylindrical]
+pose = { thumb = 0.72, index = 0.82, middle = 0.84, ring = 0.82, pinky = 0.78 }
+preshape = { thumb = 0.15, index = 0.10, middle = 0.10, ring = 0.12, pinky = 0.15 }
+force = 0.62
+speed = 0.95
+critical_fingers = ["thumb", "index", "middle"]
+description = "Bottles, cans, handles. Thumb opposes the finger group."
+
+[grasps.spherical]
+pose = { thumb = 0.62, index = 0.66, middle = 0.68, ring = 0.66, pinky = 0.62 }
+preshape = { thumb = 0.05, index = 0.05, middle = 0.05, ring = 0.05, pinky = 0.05 }
+force = 0.50
+speed = 0.90
+critical_fingers = ["thumb", "index", "middle", "ring"]
+description = "Cage a ball or a piece of fruit; contact spread over four digits."
+
+[grasps.precision_pinch]
+pose = { thumb = 0.78, index = 0.80, middle = 0.30, ring = 0.20, pinky = 0.15 }
+preshape = { thumb = 0.30, index = 0.25, middle = 0.30, ring = 0.20, pinky = 0.15 }
+force = 0.32
+speed = 0.70
+critical_fingers = ["thumb", "index"]
+description = "Thumb-to-index pinch for small, light or fragile objects."
+
+[grasps.tripod]
+pose = { thumb = 0.74, index = 0.76, middle = 0.74, ring = 0.22, pinky = 0.18 }
+preshape = { thumb = 0.28, index = 0.25, middle = 0.25, ring = 0.20, pinky = 0.15 }
+force = 0.40
+speed = 0.80
+critical_fingers = ["thumb", "index", "middle"]
+description = "Pens, cutlery, small tools."
+
+[grasps.lateral_key]
+pose = { thumb = 0.66, index = 0.88, middle = 0.88, ring = 0.86, pinky = 0.84 }
+force = 0.45
+speed = 0.85
+critical_fingers = ["thumb", "index"]
+description = "Thumb against the side of the curled index — keys, cards, zips."
+
+[grasps.hook]
+pose = { thumb = 0.05, index = 0.88, middle = 0.90, ring = 0.88, pinky = 0.84 }
+force = 0.70
+speed = 1.00
+critical_fingers = ["index", "middle", "ring"]
+description = "Carrier bags and handles; load on the fingers, not a pinch."
+
+[grasps.point]
+pose = { thumb = 0.55, index = 0.00, middle = 0.90, ring = 0.90, pinky = 0.88 }
+force = 0.35
+speed = 1.10
+critical_fingers = ["index"]
+description = "Index extended for touchscreens, buttons and keyboards."
+
+[grasps.fist]
+pose = { thumb = 0.90, index = 0.98, middle = 0.98, ring = 0.98, pinky = 0.96 }
+force = 0.80
+speed = 1.05
+critical_fingers = ["index", "middle", "ring", "pinky"]
+description = "Full closure. Manual only; the planner never selects it."

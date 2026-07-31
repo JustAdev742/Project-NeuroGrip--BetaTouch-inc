@@ -1,0 +1,129 @@
+## Object affordance database.
+##
+## How each object class should be handled: which grasps suit it, how hard it may
+## be squeezed, how fast it may be approached. This is the knowledge the AI uses
+## to decide *how* to perform a grasp the user has already asked for.
+##
+## `max_force` is a ceiling in [0, 1] and is always the *lower* of this value and
+## the mode's ceiling. Values here are deliberately below the hand's capability:
+## a prosthesis that can crush an egg will eventually crush an egg.
+##
+## Unknown objects fall back to a slow, low-force power grip.
+
+[affordances.bottle]
+grasps = ["cylindrical", "power"]
+max_force = 0.65
+speed_scale = 1.0
+typical_width_m = 0.070
+heavy = true
+aliases = ["water_bottle", "flask"]
+notes = "Wrap the barrel; a full bottle needs secure force against slip."
+
+[affordances.cup]
+grasps = ["cylindrical", "spherical"]
+max_force = 0.50
+speed_scale = 0.9
+typical_width_m = 0.080
+heavy = true
+aliases = ["mug", "glass", "tumbler"]
+notes = "Grip the body, not the rim; hot contents make spills costly."
+
+[affordances.can]
+grasps = ["cylindrical", "power"]
+max_force = 0.42
+typical_width_m = 0.066
+fragile = true
+aliases = ["soda_can", "tin"]
+notes = "Thin aluminium walls buckle — force is capped low on purpose."
+
+[affordances.box]
+grasps = ["power", "lateral_key"]
+max_force = 0.60
+typical_width_m = 0.120
+aliases = ["carton", "package"]
+
+[affordances.ball]
+grasps = ["spherical", "power"]
+max_force = 0.55
+speed_scale = 1.1
+typical_width_m = 0.070
+aliases = ["sphere"]
+
+[affordances.pen]
+grasps = ["tripod", "precision_pinch"]
+max_force = 0.28
+speed_scale = 0.7
+typical_width_m = 0.012
+aliases = ["pencil", "stylus", "marker"]
+notes = "Tripod is the natural writing grip and keeps the tip controllable."
+
+[affordances.key]
+grasps = ["lateral_key", "precision_pinch"]
+max_force = 0.35
+speed_scale = 0.7
+typical_width_m = 0.020
+aliases = ["keys", "keyring"]
+notes = "Lateral pinch transmits the turning torque a key needs."
+
+[affordances.card]
+grasps = ["lateral_key", "precision_pinch"]
+max_force = 0.22
+speed_scale = 0.6
+typical_width_m = 0.005
+fragile = true
+aliases = ["credit_card", "id_card", "ticket"]
+
+[affordances.phone]
+grasps = ["lateral_key", "power"]
+max_force = 0.40
+speed_scale = 0.8
+typical_width_m = 0.072
+fragile = true
+aliases = ["smartphone", "mobile"]
+
+[affordances.book]
+grasps = ["power", "hook"]
+max_force = 0.55
+typical_width_m = 0.030
+aliases = ["notebook", "magazine"]
+
+[affordances.tool]
+grasps = ["power", "cylindrical"]
+max_force = 0.78
+typical_width_m = 0.035
+heavy = true
+aliases = ["hammer", "screwdriver", "wrench"]
+notes = "Handles are designed for a firm grip; torque needs force."
+
+[affordances.fruit]
+grasps = ["spherical", "precision_pinch"]
+max_force = 0.25
+speed_scale = 0.65
+typical_width_m = 0.075
+fragile = true
+aliases = ["apple", "orange", "tomato", "egg"]
+notes = "Bruises easily — the lowest force ceiling in the table."
+
+[affordances.plate]
+grasps = ["lateral_key", "hook"]
+max_force = 0.50
+speed_scale = 0.7
+typical_width_m = 0.015
+fragile = true
+heavy = true
+aliases = ["dish", "saucer"]
+
+[affordances.handle]
+grasps = ["cylindrical", "hook", "power"]
+max_force = 0.72
+typical_width_m = 0.030
+heavy = true
+aliases = ["door_handle", "lever", "bag_handle"]
+
+[affordances.bag]
+grasps = ["hook", "power"]
+max_force = 0.70
+typical_width_m = 0.020
+heavy = true
+aliases = ["carrier_bag", "shopping_bag"]
+notes = "Hook carries load on the fingers rather than a fatiguing pinch."
