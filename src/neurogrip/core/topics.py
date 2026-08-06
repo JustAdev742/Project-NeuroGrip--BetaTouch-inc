@@ -22,6 +22,22 @@ class Topics:
     SYSTEM_STOPPED = "system.stopped"
     SYSTEM_ERROR = "system.error"
 
+    # -- service lifecycle -----------------------------------------------------
+    # Published by the service manager. Separate from SYSTEM_* because these
+    # describe one subsystem's lifecycle, not the whole runtime's: a service
+    # restarting is routine, the system stopping is not.
+    SERVICE_STARTED = "service.started"
+    SERVICE_STOPPED = "service.stopped"
+    SERVICE_HEALTH = "service.health"
+    SERVICE_ERROR = "service.error"
+    SERVICE_RESTARTED = "service.restarted"
+
+    # -- hardware availability -------------------------------------------------
+    # The tri-state (detected / missing / disabled) that gates operational mode.
+    HARDWARE_SCANNED = "hardware.scanned"
+    HARDWARE_MISSING = "hardware.missing"
+    HARDWARE_READY = "hardware.ready"
+
     # -- EMG ------------------------------------------------------------------
     EMG_FRAME = "emg.frame"
     EMG_QUALITY = "emg.quality"
