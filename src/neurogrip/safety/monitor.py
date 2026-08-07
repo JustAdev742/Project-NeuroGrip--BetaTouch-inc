@@ -204,7 +204,9 @@ class SafetyMonitor(ServiceBase):
         faults: list[Fault] = []
         for name in self._watchdogs.expired:
             watchdog = self._watchdogs.get(name)
-            if watchdog is None:
+            if watchdog is None or watchdog.diagnostic:
+                # A probe's expiry is expected. Reporting it as a fault would
+                # raise an incident every time the trigger audit runs.
                 continue
             faults.append(
                 Fault(

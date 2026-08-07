@@ -253,6 +253,10 @@ rehearsal_interval_s = 30.0
 # open, idle and holding nothing, so a passing check is invisible.
 proof_enabled = true
 proof_interval_s = 21600.0   # 6 hours
+# Verify that something can still *cause* a stop: rule registration, watchdog
+# delivery, the STOP button's wiring. A stop nothing can trigger fails as
+# quietly as one that triggers and does nothing.
+trigger_probe_interval_s = 300.0
 
 [safety.watchdogs]
 control_s = 0.1

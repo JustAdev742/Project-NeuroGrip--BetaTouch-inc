@@ -78,6 +78,9 @@ What they assert:
 - **The emergency stop still works.** `TestEstopIntegrity` covers the periodic
   self-check that watches the stop path between manual tests, including the
   case that motivated it: a listener registration silently disappearing.
+  `TestTriggerAudit` covers the other half — that something can still *cause* a
+  stop — including a severed watchdog-delivery wire and a `CRITICAL`-capable
+  rule disabled at runtime.
 
 ---
 

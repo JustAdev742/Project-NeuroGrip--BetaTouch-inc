@@ -73,7 +73,9 @@ def _is_diagnostic(event: Event) -> bool:
     thing the black box exists to preserve.
     """
     payload = event.payload
-    return isinstance(payload, dict) and bool(payload.get("diagnostic"))
+    if isinstance(payload, dict):
+        return bool(payload.get("diagnostic"))
+    return bool(getattr(payload, "diagnostic", False))
 
 
 def serialise(value: Any, depth: int = 0) -> Any:

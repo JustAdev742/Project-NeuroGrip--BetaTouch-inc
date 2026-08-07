@@ -513,3 +513,29 @@ class TestAuditFixesInTheAssembledSystem:
         assert not application.safety.state.ai_allowed
         # Direct control survives: the hand is still the user's to move.
         assert application.safety.state.motion_allowed
+
+    def test_the_trigger_sources_are_audited_in_the_running_system(self, application):
+        """A stop nothing can trigger fails as quietly as one that does nothing."""
+        check = application.estop_check
+        assert check is not None and check.triggers is not None
+        _run(application, 2.0)
+
+        assert check.triggers.static_problems() == ()
+        assert check.failures == 0
+        # The probe's expiry must not surface as a fault to the user.
+        codes = {f.code for f in application.safety.state.faults}
+        assert not any("estop-probe" in code for code in codes)
+
+    def test_disabling_a_critical_rule_disables_ai_assistance(self, application):
+        """A rule that can no longer stop the hand is a broken trigger source."""
+        check = application.estop_check
+        _run(application, 1.0)
+
+        for rule in application.safety.rules:
+            if rule.name == "communication":
+                rule.set_enabled(False)
+        _run(application, 2.0)
+
+        assert check.status.value == "failed"
+        assert not application.safety.state.ai_allowed
+        assert application.safety.state.motion_allowed

@@ -59,7 +59,7 @@ from ..modes.base import ModeContext
 from ..modes.manager import ModeManager
 from ..modes.profiles import build_modes
 from ..safety.estop import EmergencyStop, EstopSource
-from ..safety.integrity import EstopIntegrityRule, EstopSelfCheck
+from ..safety.integrity import EstopIntegrityRule, EstopSelfCheck, TriggerAudit
 from ..safety.monitor import SafetyMonitor
 from ..safety.rules import SafetyContext
 from ..safety.watchdog import WatchdogGroup
@@ -497,6 +497,14 @@ def build_application(
     estop.add_listener(controller.on_estop_record)
 
     integrity_section = config.section("safety.estop_check")
+    trigger_audit = TriggerAudit(
+        estop,
+        safety,
+        watchdogs,
+        bus,
+        clock,
+        probe_interval_s=integrity_section.get_float("trigger_probe_interval_s", 300.0),
+    )
     estop_check = EstopSelfCheck(
         estop,
         controller,
@@ -505,6 +513,7 @@ def build_application(
         rehearsal_interval_s=integrity_section.get_float("rehearsal_interval_s", 30.0),
         proof_interval_s=integrity_section.get_float("proof_interval_s", 21600.0),
         proof_enabled=integrity_section.get_bool("proof_enabled", True),
+        triggers=trigger_audit,
     )
     safety.add_rule(EstopIntegrityRule(estop_check))
 
@@ -657,6 +666,7 @@ def build_application(
             profiles=profiles,
             software_version=__version__,
         )
+        trigger_audit.attach_ui(ui_service)
 
     # -- telemetry ------------------------------------------------------------
     blackbox = None

@@ -61,7 +61,14 @@ from ..core.topics import Topics
 from .estop import EmergencyStop
 from .rules import Fault, SafetyContext, _BaseRule
 
-__all__ = ["EstopCheckResult", "EstopIntegrityRule", "EstopSelfCheck", "IntegrityStatus"]
+__all__ = [
+    "CRITICAL_CAPABLE_RULES",
+    "EstopCheckResult",
+    "EstopIntegrityRule",
+    "EstopSelfCheck",
+    "IntegrityStatus",
+    "TriggerAudit",
+]
 
 log = get_logger(__name__)
 
@@ -88,7 +95,10 @@ class IntegrityStatus(str, Enum):
         return {
             IntegrityStatus.UNKNOWN: "not yet checked",
             IntegrityStatus.CHAIN_OK: "signalling path verified",
-            IntegrityStatus.VERIFIED: "fully verified",
+            # Deliberately not "fully verified": the trigger audit runs
+            # alongside and contributes failures, but a stop is only ever as
+            # verified as the parts that have actually been exercised.
+            IntegrityStatus.VERIFIED: "signalling and drive paths verified",
             IntegrityStatus.FAILED: "FAILED",
         }[self]
 
@@ -117,6 +127,195 @@ class _ProofPhase(str, Enum):
     REARMING = "rearming"
 
 
+#: Rules that can produce a ``CRITICAL`` fault, which is the only severity that
+#: engages the stop. A rule missing or disabled here means the condition it
+#: watches for can no longer stop the hand — the whole point of registering it.
+CRITICAL_CAPABLE_RULES: tuple[str, ...] = (
+    "grip_force",
+    "overcurrent",
+    "thermal",
+    "communication",
+    "battery",
+)
+
+#: Name of the watchdog the trigger audit uses as a probe. Registered at
+#: ``MINOR`` severity so letting it expire is harmless.
+PROBE_WATCHDOG = "estop-probe"
+
+
+class _ProbePhase(str, Enum):
+    """Stages of the watchdog-delivery probe."""
+
+    IDLE = "idle"
+    #: Deliberately not kicking; waiting for the expiry to be delivered.
+    WAITING = "waiting"
+
+
+class TriggerAudit:
+    """Verifies that something can still *cause* an emergency stop.
+
+    :class:`EstopSelfCheck` proves that a triggered stop reaches the actuators.
+    That is only half the question. A stop nothing can trigger is just as useless
+    as one that triggers and does nothing, and it fails just as quietly.
+
+    Three software paths can engage the stop, all converging on
+    :meth:`EmergencyStop.engage`:
+
+    1. a safety rule producing a ``CRITICAL`` fault → ``SafetyMonitor._apply``;
+    2. a ``CRITICAL`` watchdog expiring → ``SafetyMonitor._on_watchdog_expiry``;
+    3. a direct call to ``SafetyMonitor.trigger_estop`` — the on-screen STOP
+       button, the debug console, the bring-up tester, a failed homing.
+
+    There is deliberately no check here for a hardware stop button, because this
+    build has none. ``EstopSource.HARDWARE_BUTTON`` exists as a well-known source
+    string for integrators who fit one; nothing in the reference hardware reads a
+    stop input, and pretending to verify a device that does not exist would be
+    worse than saying so.
+
+    What is checked, and how:
+
+    * **Watchdog delivery, actively.** ``WatchdogGroup.on_expiry`` is a single
+      assignable attribute — last writer wins, silently. So the audit registers
+      its own watchdog, lets it expire, and confirms the monitor's handler ran.
+      That exercises the real wire with a harmless payload. It proves delivery
+      *into* the handler; the two-line ``severity >= CRITICAL → engage`` branch
+      inside it is covered by unit tests, not by this.
+    * **Everything else, statically.** Identity of the stop object, presence and
+      enablement of the rules that can reach ``CRITICAL``, and whether the UI's
+      stop button has anything to call. These are registrations, and
+      registrations are what rot.
+    """
+
+    def __init__(
+        self,
+        estop: EmergencyStop,
+        monitor,
+        watchdogs,
+        bus: EventBus | None,
+        clock: Clock,
+        *,
+        probe_interval_s: float = 300.0,
+        probe_timeout_s: float = 0.4,
+        ui=None,
+    ) -> None:
+        self._estop = estop
+        self._monitor = monitor
+        self._watchdogs = watchdogs
+        self._bus = bus
+        self._clock = clock
+        self._probe_interval = probe_interval_s
+        self._probe_timeout = probe_timeout_s
+        self._ui = ui
+
+        self._phase = _ProbePhase.IDLE
+        self._probe_armed_at = 0.0
+        self._last_probe_at: float | None = None
+        self._delivered = False
+        self.probes = 0
+
+        self._watchdogs.add(
+            PROBE_WATCHDOG,
+            probe_timeout_s,
+            severity=Severity.MINOR,
+            enabled=False,
+            detail="Emergency-stop trigger audit probe. Expiring this is deliberate.",
+            diagnostic=True,
+        )
+        if bus is not None:
+            bus.subscribe(Topics.WATCHDOG_EXPIRED, self._on_expiry_observed)
+
+    def attach_ui(self, ui) -> None:
+        """Include the on-screen STOP button in the audit.
+
+        Set after construction because the UI is built later than the safety
+        layer — it depends on almost everything else.
+        """
+        self._ui = ui
+
+    def _on_expiry_observed(self, event) -> None:
+        """Witness for the probe: the monitor publishes this on entry."""
+        expiry = event.payload
+        if getattr(expiry, "name", None) == PROBE_WATCHDOG:
+            self._delivered = True
+
+    # -- static checks --------------------------------------------------------
+
+    def static_problems(self) -> tuple[str, ...]:
+        """Wiring faults detectable without triggering anything."""
+        problems: list[str] = []
+
+        # The monitor must engage the *same* stop the controller listens to.
+        # Two EmergencyStop objects is a plausible wiring mistake that nothing
+        # else would ever surface: both halves work, and they are not connected.
+        if getattr(self._monitor, "estop", None) is not self._estop:
+            problems.append(
+                "the safety monitor engages a different emergency stop from the one "
+                "the controller listens to"
+            )
+
+        if getattr(self._watchdogs, "on_expiry", None) is None:
+            problems.append("watchdog expiries are delivered to nothing")
+
+        rules = {r.name: r for r in getattr(self._monitor, "rules", ())}
+        for name in CRITICAL_CAPABLE_RULES:
+            rule = rules.get(name)
+            if rule is None:
+                problems.append(f"the {name} rule is not registered; it can no longer stop the hand")
+            elif not rule.enabled:
+                problems.append(f"the {name} rule is disabled; it can no longer stop the hand")
+
+        if self._ui is not None and getattr(self._ui, "safety", None) is None:
+            problems.append("the on-screen STOP button has no safety monitor to call")
+
+        return tuple(problems)
+
+    # -- the active probe -----------------------------------------------------
+
+    def tick(self) -> tuple[str, ...]:
+        """Advance the audit. Returns any problems found on this tick."""
+        now = self._clock.monotonic()
+
+        if self._phase is _ProbePhase.WAITING:
+            return self._advance_probe(now)
+
+        problems = self.static_problems()
+        if problems:
+            return problems
+
+        if self._last_probe_at is None or (now - self._last_probe_at) >= self._probe_interval:
+            self._arm_probe(now)
+        return ()
+
+    def _arm_probe(self, now: float) -> None:
+        self._phase = _ProbePhase.WAITING
+        self._probe_armed_at = now
+        self._delivered = False
+        self._watchdogs.enable(PROBE_WATCHDOG, True)
+
+    def _advance_probe(self, now: float) -> tuple[str, ...]:
+        if self._delivered:
+            self._disarm(now)
+            self.probes += 1
+            return ()
+
+        # Allow the timeout plus a margin for the monitor's evaluate to run.
+        if now - self._probe_armed_at >= self._probe_timeout * 3.0:
+            self._disarm(now)
+            return (
+                "a watchdog expiry was not delivered to the safety monitor; "
+                "a stalled control loop would no longer stop the hand",
+            )
+        return ()
+
+    def _disarm(self, now: float) -> None:
+        self._phase = _ProbePhase.IDLE
+        self._last_probe_at = now
+        # Kick before disabling, so the probe is not left sitting in the expired
+        # set where diagnostics would report it as a real fault.
+        self._watchdogs.kick(PROBE_WATCHDOG)
+        self._watchdogs.enable(PROBE_WATCHDOG, False)
+
+
 class EstopSelfCheck:
     """Periodically verifies that the emergency stop still works.
 
@@ -137,11 +336,16 @@ class EstopSelfCheck:
         proof_enabled: bool = True,
         confirm_timeout_s: float = 0.5,
         rearm_timeout_s: float = 1.0,
+        triggers: TriggerAudit | None = None,
     ) -> None:
         self._estop = estop
         self._controller = controller
         self._clock = clock
         self._bus = bus
+        #: Verifies the other half — that something can still *cause* a stop.
+        #: Folded into one status because the user's question is singular: can
+        #: the emergency stop be relied on?
+        self._triggers = triggers
         self._rehearsal_interval = rehearsal_interval_s
         self._proof_interval = proof_interval_s
         self._proof_enabled = proof_enabled
@@ -185,8 +389,14 @@ class EstopSelfCheck:
         """True while a proof test is in progress."""
         return self._phase is not _ProofPhase.IDLE
 
+    @property
+    def triggers(self) -> TriggerAudit | None:
+        return self._triggers
+
     def describe(self) -> str:
         parts = [f"e-stop integrity: {self._status.label}"]
+        if self._triggers is not None and self._triggers.probes:
+            parts.append(f"{self._triggers.probes} trigger probe(s) delivered")
         if self._last_result is not None:
             parts.append(str(self._last_result))
         return " — ".join(parts)
@@ -200,6 +410,12 @@ class EstopSelfCheck:
         if self._phase is not _ProofPhase.IDLE:
             self._advance_proof(now)
             return
+
+        if self._triggers is not None:
+            problems = self._triggers.tick()
+            if problems:
+                self._fail("triggers", "; ".join(problems), now)
+                return
 
         if self._due(self._last_rehearsal_at, now, self._rehearsal_interval):
             self._run_rehearsal(now)
@@ -362,8 +578,21 @@ class EstopSelfCheck:
             passed=False, kind=kind, message=message, timestamp=now, detail=detail or {}
         )
         self._last_result = result
-        self._last_failure = result
         self._status = IntegrityStatus.FAILED
+
+        # Announce on the transition only. A static wiring fault is detected on
+        # every tick, and logging it each time would produce several CRITICAL
+        # lines a second — the same burying problem the diagnostic flag solves
+        # for the proof test, arriving from the other direction.
+        repeat = (
+            self._last_failure is not None
+            and self._last_failure.kind == kind
+            and self._last_failure.message == message
+        )
+        self._last_failure = result
+        if repeat:
+            return
+
         self.failures += 1
         log.critical("E-STOP INTEGRITY CHECK FAILED", kind=kind, detail=message)
         if self._bus is not None:

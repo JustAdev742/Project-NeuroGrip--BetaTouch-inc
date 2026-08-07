@@ -134,6 +134,43 @@ The proof test really does cut drive, confirms from *telemetry* that the firmwar
 honoured it, and re-arms. It runs at startup and then **every 6 hours**, and only
 when the hand is open, idle, holding nothing and under no motion command.
 
+**The trigger sources** — everything that can *cause* a stop. A stop nothing can
+trigger fails just as quietly as one that triggers and does nothing. Three
+software paths reach `EmergencyStop.engage`:
+
+1. a safety rule producing a `CRITICAL` fault → `SafetyMonitor._apply`;
+2. a `CRITICAL` watchdog expiring → `SafetyMonitor._on_watchdog_expiry`;
+3. a direct `SafetyMonitor.trigger_estop` — the on-screen STOP button, the debug
+   console, the bring-up tester, a failed homing.
+
+Path 2 is checked **actively**, because `WatchdogGroup.on_expiry` is a single
+assignable attribute: last writer wins, silently. `TriggerAudit` registers its
+own watchdog, lets it expire, and confirms the monitor's handler ran. That
+exercises the real wire with a harmless payload. It proves delivery *into* the
+handler; the two-line `severity >= CRITICAL → engage` branch inside is covered by
+unit tests, not by this.
+
+The rest are checked statically every tick, because they are registrations and
+registrations are what rot:
+
+| Check | The failure it catches |
+|---|---|
+| The monitor engages the same `EmergencyStop` the controller listens to | Two objects: both halves work, and they are not connected |
+| `WatchdogGroup.on_expiry` is set | Expiries delivered to nothing |
+| Every `CRITICAL`-capable rule is registered **and enabled** | A rule disabled at the console means its condition can no longer stop the hand |
+| The UI's STOP button has a safety monitor to call | The most visible way to stop the hand leads nowhere |
+
+`CRITICAL_CAPABLE_RULES` lists the five rules that can reach `CRITICAL` —
+grip force, overcurrent, thermal, communication, battery. A test asserts that
+list still matches the rules whose source actually emits `Severity.CRITICAL`, so
+a rule gaining or losing that ability cannot silently fall out of the audit.
+
+**There is no check for a hardware stop button, because this build has none.**
+`EstopSource.HARDWARE_BUTTON` exists as a well-known source string for
+integrators who fit one, and nothing in the reference hardware reads a stop
+input. Pretending to verify a device that does not exist would be worse than
+saying so.
+
 Measured window: **5 ms of drive-down, zero finger movement**. The fingers are
 already at rest and the tendon return springs hold them open, so a passing check
 is imperceptible. A command issued inside that window is refused and re-submitted
@@ -144,6 +181,7 @@ is imperceptible. A command issued inside that window is refused and re-submitte
 rehearsal_interval_s = 30.0
 proof_enabled = true
 proof_interval_s = 21600.0
+trigger_probe_interval_s = 300.0
 ```
 
 Two design points worth stating, because the obvious choices are wrong:
@@ -155,6 +193,13 @@ stops are logged at `INFO`, carry `diagnostic: true` on the event, do not trigge
 a black-box flush, and show on the dashboard as "self-check" rather than
 "emergency stop". They are still *recorded* — they are part of what happened —
 they are just not treated as incidents.
+
+The same applies to the trigger probe, from the other direction: `diagnostic` is
+a property of the watchdog itself, so its expiry is logged at debug, is skipped
+by the monitor's fault synthesis, and does not flush the black box — while still
+travelling the entire delivery path, which is the whole point. And a *static*
+wiring fault is detected on every tick, so it is announced on the transition
+only; several `CRITICAL` lines a second is its own way of hiding a problem.
 
 *A failure degrades to Manual rather than stopping the hand.* The opposite
 reading is tempting: a broken e-stop sounds like grounds for refusing to run.
@@ -342,17 +387,22 @@ case:
   reconnect. That is correct but not robust: a controller that reboots while the
   host is unresponsive runs on defaults until the host notices.
   (`TODO(persistence)` in `firmware/.../main.cpp`.)
-- **The periodic e-stop check cannot prove the parts it cannot reach.** The
-  rehearsal proves the signalling path and the proof test proves that commanding
-  a stop de-energises the drive. Neither proves the *trigger* sources still work:
-  nothing verifies that the hardware stop button is still wired, or that a
-  critical fault would still call `trigger_estop`. Those remain covered only by
-  `neurogrip test estop` and by the unit tests.
 - **The proof test needs an idle hand.** A device in continuous use may go a long
   time without meeting the gating conditions, and the hardware half of the check
   is skipped silently while that is true. `neurogrip diagnose` distinguishes
-  "signalling path verified" from "fully verified", so the difference is visible,
-  but nothing escalates when a proof test has not run for an unusually long time.
+  "signalling path verified" from "signalling and drive paths verified", so the
+  difference is visible, but nothing escalates when a proof test has not run for
+  an unusually long time.
+- **The trigger audit checks registration, not behaviour.** It proves a watchdog
+  expiry reaches the monitor and that the `CRITICAL`-capable rules are present
+  and enabled. It does not prove those rules would *fire* under the conditions
+  they watch for — that a genuinely over-temperature hand produces a `CRITICAL`
+  thermal fault is asserted by unit tests against synthetic state, not on the
+  device. Verifying it for real would mean overheating a motor.
+- **`trigger_estop` callers are not audited individually.** The UI's STOP button
+  is checked because it has a reference that can be `None`; the console, the
+  bring-up tester and the homing path call the same method directly and are
+  covered only by tests.
 
 Anyone taking this beyond a prototype should start with the second and third
 items.

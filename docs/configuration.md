@@ -76,8 +76,9 @@ that is obvious in hindsight and baffling at the time:
 
 `[safety.estop_check]` controls how often the emergency stop verifies itself —
 `rehearsal_interval_s` bounds how long a broken signalling path could go
-unnoticed, and `proof_interval_s` how often the hardware path is proven by
-actually cutting drive. See [safety.md](safety.md).
+unnoticed, `trigger_probe_interval_s` how long a broken *trigger* path could, and
+`proof_interval_s` how often the hardware path is proven by actually cutting
+drive. See [safety.md](safety.md).
 
 Errors refuse the boot, before any device is opened — the alternative is a
 half-built system holding an open serial port while it reports a problem that was

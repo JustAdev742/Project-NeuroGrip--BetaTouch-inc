@@ -1101,3 +1101,174 @@ class TestEstopIntegrity:
 
         recorder._on_event(estop_event(diagnostic=False))
         assert list(records.glob("*.json")), "a real stop still writes a record"
+
+
+class TestTriggerAudit:
+    """A stop nothing can trigger fails as quietly as one that does nothing.
+
+    `EstopSelfCheck` proves a triggered stop reaches the actuators. These cover
+    the other half: that something can still trigger it.
+    """
+
+    def _rig(self, clock, **kwargs):
+        from neurogrip.core.events import EventBus
+        from neurogrip.safety.integrity import EstopSelfCheck, TriggerAudit
+
+        bus = EventBus(clock)
+        controller, _ = _hand(clock, bus=bus)
+        estop = EmergencyStop(clock)
+        estop.add_listener(controller.on_estop_record)
+        watchdogs = WatchdogGroup(clock)
+        monitor = SafetyMonitor(clock, bus, estop, watchdogs)
+        monitor.start()
+        audit = TriggerAudit(
+            estop, monitor, watchdogs, bus, clock,
+            probe_interval_s=kwargs.pop("probe_interval_s", 5.0),
+            probe_timeout_s=kwargs.pop("probe_timeout_s", 0.4),
+        )
+        check = EstopSelfCheck(
+            estop, controller, clock, bus, proof_enabled=False, triggers=audit, **kwargs
+        )
+        return check, audit, monitor, watchdogs, estop, controller
+
+    def _run(self, check, monitor, controller, clock, seconds):
+        from neurogrip.safety.rules import SafetyContext
+
+        for _ in range(int(seconds / 0.005)):
+            clock.advance(0.005)
+            monitor.evaluate(
+                SafetyContext(timestamp=clock.monotonic(), hand=controller.state)
+            )
+            check.tick()
+            controller.tick()
+
+    # -- the active probe -------------------------------------------------
+
+    def test_a_watchdog_expiry_still_reaches_the_monitor(self, clock: SimulatedClock):
+        check, audit, monitor, _, _, controller = self._rig(clock)
+        self._run(check, monitor, controller, clock, 3.0)
+
+        assert audit.probes >= 1
+        assert check.failures == 0
+
+    def test_a_severed_expiry_wire_is_caught(self, clock: SimulatedClock):
+        """`WatchdogGroup.on_expiry` is one assignable attribute: last writer wins."""
+        check, _, monitor, watchdogs, _, controller = self._rig(clock)
+        self._run(check, monitor, controller, clock, 1.0)
+
+        watchdogs.on_expiry = None  # a second consumer clobbers it
+        self._run(check, monitor, controller, clock, 8.0)
+
+        assert check.status.value == "failed"
+        assert "delivered to nothing" in check.last_failure.message
+
+    def test_the_probe_is_not_reported_as_a_fault(self, clock: SimulatedClock):
+        """Otherwise a routine check raises an incident every few minutes."""
+        check, audit, monitor, _, _, controller = self._rig(clock)
+        self._run(check, monitor, controller, clock, 13.0)
+
+        assert audit.probes >= 2
+        codes = {f.code for f in monitor.state.faults}
+        assert not any(c.startswith("watchdog:estop-probe") for c in codes)
+
+    def test_the_probe_does_not_flush_the_black_box(self, clock: SimulatedClock):
+        from neurogrip.core.topics import Topics
+        from neurogrip.telemetry import _is_diagnostic
+
+        check, _, monitor, _, _, controller = self._rig(clock)
+        seen = []
+        monitor._bus.subscribe(Topics.WATCHDOG_EXPIRED, seen.append)
+        self._run(check, monitor, controller, clock, 8.0)
+
+        assert seen, "the expiry must still be published — that is the witness"
+        assert all(_is_diagnostic(event) for event in seen)
+
+    def test_the_probe_does_not_linger_as_expired(self, clock: SimulatedClock):
+        check, audit, monitor, watchdogs, _, controller = self._rig(clock)
+        self._run(check, monitor, controller, clock, 8.0)
+
+        assert audit.probes >= 1
+        assert "estop-probe" not in watchdogs.expired
+
+    # -- static wiring ----------------------------------------------------
+
+    def test_a_disabled_critical_rule_is_caught(self, clock: SimulatedClock):
+        """A disabled CommunicationRule means link loss no longer stops the hand."""
+        check, _, monitor, _, _, controller = self._rig(clock)
+        for rule in monitor.rules:
+            if rule.name == "communication":
+                rule.set_enabled(False)
+        self._run(check, monitor, controller, clock, 1.0)
+
+        assert check.status.value == "failed"
+        assert "communication rule is disabled" in check.last_failure.message
+
+    def test_every_critical_capable_rule_is_audited(self, clock: SimulatedClock):
+        """The list must match the rules that can actually reach CRITICAL."""
+        import inspect
+
+        from neurogrip.core.errors import Severity
+        from neurogrip.safety.integrity import CRITICAL_CAPABLE_RULES
+        from neurogrip.safety.rules import DEFAULT_RULES
+
+        actual = set()
+        for rule_type in DEFAULT_RULES:
+            source = inspect.getsource(rule_type)
+            if "Severity.CRITICAL" in source:
+                actual.add(rule_type.rule_name)
+        assert actual == set(CRITICAL_CAPABLE_RULES), (
+            "a rule gained or lost the ability to stop the hand; update "
+            "CRITICAL_CAPABLE_RULES so the audit still covers it"
+        )
+        assert Severity.CRITICAL  # the severity that engages the stop
+
+    def test_two_estop_objects_are_caught(self, clock: SimulatedClock):
+        """Both halves work; they are simply not connected to each other."""
+        from neurogrip.core.events import EventBus
+        from neurogrip.safety.integrity import TriggerAudit
+
+        bus = EventBus(clock)
+        controller, _ = _hand(clock, bus=bus)
+        listened_to = EmergencyStop(clock)
+        engaged_by_monitor = EmergencyStop(clock)
+        listened_to.add_listener(controller.on_estop_record)
+
+        watchdogs = WatchdogGroup(clock)
+        monitor = SafetyMonitor(clock, bus, engaged_by_monitor, watchdogs)
+        audit = TriggerAudit(listened_to, monitor, watchdogs, bus, clock)
+
+        problems = audit.static_problems()
+        assert any("different emergency stop" in p for p in problems)
+
+    def test_an_unwired_stop_button_is_caught(self, clock: SimulatedClock):
+        _, audit, monitor, *_ = self._rig(clock)
+
+        class UnwiredUi:
+            safety = None
+
+        audit.attach_ui(UnwiredUi())
+        assert any("STOP button" in p for p in audit.static_problems())
+
+        class WiredUi:
+            pass
+
+        WiredUi.safety = monitor
+        audit.attach_ui(WiredUi())
+        assert not any("STOP button" in p for p in audit.static_problems())
+
+    def test_a_healthy_system_reports_no_problems(self, clock: SimulatedClock):
+        check, audit, monitor, _, _, controller = self._rig(clock)
+        assert audit.static_problems() == ()
+        self._run(check, monitor, controller, clock, 2.0)
+        assert check.status.value in ("chain_ok", "verified")
+
+    def test_a_static_fault_is_announced_once_not_every_tick(
+        self, clock: SimulatedClock
+    ):
+        """Several CRITICAL lines a second is its own way of hiding a problem."""
+        check, _, monitor, watchdogs, _, controller = self._rig(clock)
+        watchdogs.on_expiry = None
+        self._run(check, monitor, controller, clock, 10.0)
+
+        assert check.status.value == "failed"
+        assert check.failures == 1, "the transition is announced, the state is not"

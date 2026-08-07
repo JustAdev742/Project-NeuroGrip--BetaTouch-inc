@@ -196,11 +196,13 @@ the next command is refused. The third is the one that matters and the one nothi
 else reveals.
 
 But a test you have to remember to run is not much of a guarantee, so the stop
-also checks itself while the system runs: it rehearses the signalling path every
-30 seconds, and every 6 hours — when the hand is open and idle — it proves the
-hardware path by actually cutting drive for 5 ms and watching it happen. Failure
-disables AI assistance and says so; it does not stop the hand, because in Manual
-every motion is directly driven by muscle.
+also checks itself while the system runs. Three things, on three timescales: it
+rehearses the signalling path every 30 seconds; every 5 minutes it verifies that
+something can still *cause* a stop, by deliberately expiring a probe watchdog and
+confirming the safety monitor hears it; and every 6 hours — when the hand is open
+and idle — it proves the hardware path by actually cutting drive for 5 ms and
+watching it happen. Failure disables AI assistance and says so; it does not stop
+the hand, because in Manual every motion is directly driven by muscle.
 
 That check exists for a specific reason worth admitting: the registration
 connecting the stop to the motion controller was missing from the first version

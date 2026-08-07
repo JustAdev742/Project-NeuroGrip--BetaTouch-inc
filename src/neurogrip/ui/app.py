@@ -281,6 +281,16 @@ class UiService(ServiceBase):
 
     # -- actions --------------------------------------------------------------
 
+    @property
+    def safety(self):
+        """The safety monitor the STOP button calls, or ``None`` if unwired.
+
+        Exposed so :class:`~neurogrip.safety.integrity.TriggerAudit` can check
+        that the most visible way for a user to stop their hand still leads
+        somewhere.
+        """
+        return self._safety
+
     def handle_action(self, event: UiEvent) -> None:
         """Route a UI action to the owning service."""
         self.actions += 1

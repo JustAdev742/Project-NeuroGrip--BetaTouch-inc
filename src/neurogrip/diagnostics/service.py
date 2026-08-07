@@ -457,14 +457,18 @@ def build_standard_selftests(
                 message="not yet verified this session",
                 remedy="The first check runs within 30 s of starting.",
             )
+        measurements: dict[str, float | str] = {
+            "rehearsals": estop_check.rehearsals,
+            "proofs": estop_check.proofs,
+        }
+        triggers = estop_check.triggers
+        if triggers is not None:
+            measurements["trigger_probes"] = triggers.probes
         return TestResult(
             name="Emergency stop",
             outcome=TestOutcome.PASS,
             message=status.label,
-            measurements={
-                "rehearsals": estop_check.rehearsals,
-                "proofs": estop_check.proofs,
-            },
+            measurements=measurements,
         )
 
     runner.register("Emergency stop", "Verify the stop path is intact", test_estop_integrity,

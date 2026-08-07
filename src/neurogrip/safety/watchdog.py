@@ -47,6 +47,10 @@ class WatchdogExpiry:
     severity: Severity
     timestamp: float
     detail: str = ""
+    #: True for a watchdog whose expiry is deliberate — see
+    #: :class:`~neurogrip.safety.integrity.TriggerAudit`. Consumers must treat
+    #: these as evidence that delivery works, not as evidence of a fault.
+    diagnostic: bool = False
 
     def __str__(self) -> str:  # pragma: no cover - display helper
         return (
@@ -73,6 +77,10 @@ class Watchdog:
     #: Longest gap ever observed between kicks — the headline health number.
     worst_gap: float = 0.0
     detail: str = ""
+    #: A probe whose expiry is expected. It still travels the whole delivery
+    #: path — that is the point — but it must not be reported as a fault, or a
+    #: routine check would raise an incident every few minutes.
+    diagnostic: bool = False
 
     def kick(self, now: float) -> bool:
         """Record activity. Returns ``True`` if this cleared an expiry."""
@@ -96,6 +104,7 @@ class Watchdog:
         self.expired = True
         self.expiry_count += 1
         return WatchdogExpiry(
+            diagnostic=self.diagnostic,
             name=self.name,
             timeout=self.timeout,
             elapsed=elapsed,
@@ -137,10 +146,16 @@ class WatchdogGroup:
         severity: Severity = Severity.FALLBACK,
         enabled: bool = True,
         detail: str = "",
+        diagnostic: bool = False,
     ) -> Watchdog:
         """Register a watchdog."""
         watchdog = Watchdog(
-            name=name, timeout=timeout, severity=severity, enabled=enabled, detail=detail
+            name=name,
+            timeout=timeout,
+            severity=severity,
+            enabled=enabled,
+            detail=detail,
+            diagnostic=diagnostic,
         )
         self._watchdogs[name] = watchdog
         return watchdog
@@ -162,7 +177,10 @@ class WatchdogGroup:
         for watchdog in self._watchdogs.values():
             expiry = watchdog.check(now)
             if expiry is not None:
-                log.error(str(expiry), watchdog=watchdog.name, severity=expiry.severity.name)
+                if expiry.diagnostic:
+                    log.debug(str(expiry), watchdog=watchdog.name, detail="probe")
+                else:
+                    log.error(str(expiry), watchdog=watchdog.name, severity=expiry.severity.name)
                 expiries.append(expiry)
                 if self.on_expiry is not None:
                     self.on_expiry(expiry)
