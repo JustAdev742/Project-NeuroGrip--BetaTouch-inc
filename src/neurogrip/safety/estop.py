@@ -48,14 +48,20 @@ class EstopSource:
 
 @dataclass(frozen=True, slots=True)
 class EstopRecord:
-    """Audit entry for an e-stop engagement or release."""
+    """Audit entry for an e-stop engagement, release or rehearsal."""
 
     engaged: bool
     source: str
     reason: str
     timestamp: float
+    #: True for a :meth:`EmergencyStop.rehearse` notification. Listeners must
+    #: acknowledge these and do nothing else — a rehearsal proves the
+    #: notification path is intact without stopping anything.
+    rehearsal: bool = False
 
     def __str__(self) -> str:  # pragma: no cover - display helper
+        if self.rehearsal:
+            return f"E-STOP rehearsal by {self.source}"
         verb = "ENGAGED" if self.engaged else "released"
         return f"E-STOP {verb} by {self.source}: {self.reason}"
 
@@ -76,6 +82,7 @@ class EmergencyStop:
         #: Counters for the diagnostics screen.
         self.engage_count = 0
         self.release_count = 0
+        self.rehearsal_count = 0
 
     # -- listeners ------------------------------------------------------------
 
@@ -87,6 +94,44 @@ class EmergencyStop:
         """
         with self._lock:
             self._listeners.append(listener)
+
+    @property
+    def listener_count(self) -> int:
+        """How many listeners are registered.
+
+        Zero is a defect, not a configuration: an e-stop nothing listens to is a
+        latch that changes a boolean. :mod:`neurogrip.safety.integrity` checks it.
+        """
+        with self._lock:
+            return len(self._listeners)
+
+    def rehearse(self, source: str = "diagnostics:integrity") -> EstopRecord:
+        """Notify listeners *without* engaging, so the chain can be verified.
+
+        The e-stop's notification path is the part most likely to break
+        silently: it is a registration made once at assembly, and losing it
+        changes no behaviour until the day someone needs the stop. A rehearsal
+        exercises exactly that path — every listener is called with a record
+        marked ``rehearsal`` — and costs the hand nothing.
+
+        This deliberately proves less than it might appear to. It shows the
+        record reaches the controller; it does not show that the actuators would
+        actually stop. That second half needs the drive, and is what
+        :class:`~neurogrip.safety.integrity.EstopSelfCheck` runs its periodic
+        proof test for.
+        """
+        record = EstopRecord(
+            engaged=False,
+            source=source,
+            reason="integrity rehearsal",
+            timestamp=self._clock.monotonic(),
+            rehearsal=True,
+        )
+        # Not appended to the history: rehearsals are routine and would bury the
+        # real engagements the incident log exists to preserve.
+        self.rehearsal_count += 1
+        self._notify(record)
+        return record
 
     def _notify(self, record: EstopRecord) -> None:
         for listener in list(self._listeners):

@@ -295,8 +295,9 @@ Not yet done, and marked `TODO` in the code where relevant:
   the controller's RAM and are re-sent by the host at startup and after every
   reconnect. NVS storage is not implemented.
 - **No independent hardware safety channel.** The e-stop is software on the same
-  MCU as the drive. A certifiable device needs a contactor with no software in
-  the path.
+  MCU as the drive, and although it verifies itself continuously — rehearsing the
+  signalling path every 30 s and proving the drive-off path every 6 hours — a
+  certifiable device needs a contactor with no software in the path.
 
 The last item, and grip-force measurement, are where anyone taking this further
 should start.

@@ -131,6 +131,12 @@ class HandController(ServiceBase):
         #: cancel is a single unambiguous assignment.
         self._commanded = HandPose.open_hand()
         self._estop = False
+        #: True while the active stop is a deliberate self-check rather than a
+        #: real one. Affects only how it is described, never what it does.
+        self._estop_diagnostic = False
+        #: When an e-stop rehearsal last reached this controller. ``None`` until
+        #: the first one; see :meth:`on_estop_record`.
+        self._last_estop_rehearsal: float | None = None
         self._speed_scale = 1.0
         self._force_ceiling = self._servo_limits.max_force
         self._last_write_at = 0.0
@@ -337,23 +343,75 @@ class HandController(ServiceBase):
             log.info("motion cancelled", reason=reason, source=command.source)
         self._bus.publish(Topics.MOTION_CANCELLED, {"reason": reason}, source=self.name)
 
-    def emergency_stop(self, reason: str = "emergency stop") -> None:
-        """Cut drive immediately and latch. Safe to call from any thread."""
+    def on_estop_record(self, record) -> None:
+        """Listener registered with :class:`~neurogrip.safety.estop.EmergencyStop`.
+
+        This is the *only* path by which a software emergency stop reaches the
+        actuators promptly. The decision loop also checks, but that is a 100 Hz
+        backstop: a stop must not wait for a scheduler group that may itself be
+        what has stalled.
+
+        Three record kinds, three responses:
+
+        * **rehearsal** — acknowledge and do nothing. The acknowledgement is what
+          lets :mod:`neurogrip.safety.integrity` prove this wire still exists.
+        * **engaged** — cut drive now.
+        * **released** — do nothing. Clearing the latch re-arms the drive, which
+          is a deliberate act with an owner, not a consequence of a notification.
+        """
+        if record.rehearsal:
+            self._last_estop_rehearsal = self._clock.monotonic()
+            return
+        if record.engaged:
+            self.emergency_stop(record.reason)
+
+    @property
+    def last_estop_rehearsal(self) -> float | None:
+        """When a rehearsal last reached this controller; ``None`` if never.
+
+        ``None`` rather than ``0.0``: a simulated clock starts at zero, so zero
+        is a real timestamp here.
+        """
+        return self._last_estop_rehearsal
+
+    def emergency_stop(self, reason: str = "emergency stop", *, diagnostic: bool = False) -> None:
+        """Cut drive immediately and latch. Safe to call from any thread.
+
+        ``diagnostic`` marks a deliberate stop run by
+        :class:`~neurogrip.safety.integrity.EstopSelfCheck` to prove the path
+        still works. It changes **nothing** about what happens to the actuators —
+        that is the entire point, since a proof test that took a different route
+        would prove nothing — and only changes how the event is announced.
+
+        The distinction matters because the alternative is worse than it sounds:
+        a routine check logging ``CRITICAL`` and flushing an incident file every
+        few hours would bury real stops among hundreds of fake ones and teach
+        whoever reads the logs to skip them.
+        """
         self._estop = True
+        self._estop_diagnostic = diagnostic
         try:
             self._servo.emergency_stop()
         finally:
             self._trajectory.stop()
             self._queue.clear(self._clock.monotonic())
             self._grip.reset()
-            log.critical("EMERGENCY STOP", reason=reason)
-            self._bus.publish(Topics.ESTOP_ENGAGED, {"reason": reason}, source=self.name)
+            if diagnostic:
+                log.info("e-stop proof test: cutting drive", reason=reason)
+            else:
+                log.critical("EMERGENCY STOP", reason=reason)
+            self._bus.publish(
+                Topics.ESTOP_ENGAGED,
+                {"reason": reason, "diagnostic": diagnostic},
+                source=self.name,
+            )
 
     def clear_emergency_stop(self) -> None:
         """Release the latch. Requires an explicit user acknowledgement upstream."""
         if not self._estop:
             return
         self._estop = False
+        self._estop_diagnostic = False
         self._servo.clear_emergency_stop()
         state = self._servo.read_state()
         self._trajectory.sync(state.pose)
@@ -451,7 +509,12 @@ class HandController(ServiceBase):
 
         if self._estop or state.estop:
             self._estop = True
-            self._state = self._build_state(state, "emergency stop", grip)
+            # Say what is actually happening. Telling a user their hand is in
+            # emergency stop, when in fact it is running a two-hundred
+            # millisecond self-check, is how a safety message stops meaning
+            # anything.
+            activity = "self-check" if self._estop_diagnostic else "emergency stop"
+            self._state = self._build_state(state, activity, grip)
             return self._state
 
         if not state.comms_ok:

@@ -243,6 +243,17 @@ diagnostics_hz = 2.0
 # ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
+# Periodic verification that the emergency stop still works. Between manual
+# `neurogrip test estop` runs the stop path can break with no symptom at all;
+# these checks catch that. See docs/safety.md.
+[safety.estop_check]
+# Rehearse the signalling path (no effect on the hand) this often.
+rehearsal_interval_s = 30.0
+# Prove the hardware path by actually cutting drive. Only runs when the hand is
+# open, idle and holding nothing, so a passing check is invisible.
+proof_enabled = true
+proof_interval_s = 21600.0   # 6 hours
+
 [safety.watchdogs]
 control_s = 0.1
 emg_s = 0.3

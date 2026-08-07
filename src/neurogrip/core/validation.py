@@ -207,6 +207,10 @@ SYSTEM_RULES: tuple[Rule, ...] = (
     Rule("fusion.max_intent_age_s", float, 0.05, 5.0,
          remedy="how stale an intent may be and still authorise motion"),
     # -- safety ---------------------------------------------------------------
+    Rule("safety.estop_check.rehearsal_interval_s", float, 1.0, 3600.0,
+         remedy="how long a broken e-stop signalling path could go unnoticed"),
+    Rule("safety.estop_check.proof_interval_s", float, 60.0, 604800.0),
+    Rule("safety.estop_check.proof_enabled", bool),
     Rule("safety.watchdogs.control_s", float, 0.005, 5.0),
     Rule("safety.watchdogs.emg_s", float, 0.02, 10.0),
     Rule("safety.watchdogs.decision_s", float, 0.01, 10.0),

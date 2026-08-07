@@ -64,6 +64,18 @@ TRIGGER_TOPICS = (
 )
 
 
+def _is_diagnostic(event: Event) -> bool:
+    """True for an event a self-check produced deliberately.
+
+    Such events are still *recorded* — they are part of what happened — but they
+    do not trigger an incident flush. A periodic e-stop proof test writing an
+    incident file every few hours would bury the real ones, which is the only
+    thing the black box exists to preserve.
+    """
+    payload = event.payload
+    return isinstance(payload, dict) and bool(payload.get("diagnostic"))
+
+
 def serialise(value: Any, depth: int = 0) -> Any:
     """Convert arbitrary runtime objects to JSON-safe values.
 
@@ -139,7 +151,7 @@ class BlackBoxRecorder:
                 "payload": serialise(event.payload),
             }
         )
-        if self._auto_flush and event.topic in TRIGGER_TOPICS:
+        if self._auto_flush and event.topic in TRIGGER_TOPICS and not _is_diagnostic(event):
             self.flush(reason=event.topic)
 
     def flush(self, reason: str = "manual") -> Path | None:

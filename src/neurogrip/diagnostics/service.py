@@ -30,6 +30,7 @@ from ..hal.system import (
     SystemProbe,
     SystemStats,
 )
+from ..safety.integrity import IntegrityStatus
 from ..vision.pipeline import VisionPipeline
 from .metrics import MetricsRegistry
 from .selftest import SelfTestReport, SelfTestRunner, TestOutcome, TestResult
@@ -170,6 +171,7 @@ def build_standard_selftests(
     model_registry=None,
     clock: Clock | None = None,
     link_settle_s: float = 0.5,
+    estop_check=None,
 ) -> None:
     """Register the standard suite.
 
@@ -425,6 +427,48 @@ def build_standard_selftests(
             remedy="Watch the hand: each finger should flex and return smoothly.",
         )
 
+    def test_estop_integrity() -> TestResult:
+        """Report what the periodic checker has established about the stop.
+
+        This does not re-run the check — it surfaces its standing verdict, so
+        `neurogrip diagnose` says whether the stop is known to work rather than
+        assuming it does.
+        """
+        if estop_check is None:
+            return TestResult(
+                name="Emergency stop",
+                outcome=TestOutcome.SKIP,
+                message="integrity checking is not configured",
+            )
+        failure = estop_check.last_failure
+        if failure is not None:
+            return TestResult(
+                name="Emergency stop",
+                outcome=TestOutcome.FAIL,
+                message=failure.message,
+                measurements={"kind": failure.kind, **failure.detail},
+                remedy="Do not rely on the emergency stop. Run `neurogrip test estop`.",
+            )
+        status = estop_check.status
+        if status is IntegrityStatus.UNKNOWN:
+            return TestResult(
+                name="Emergency stop",
+                outcome=TestOutcome.WARN,
+                message="not yet verified this session",
+                remedy="The first check runs within 30 s of starting.",
+            )
+        return TestResult(
+            name="Emergency stop",
+            outcome=TestOutcome.PASS,
+            message=status.label,
+            measurements={
+                "rehearsals": estop_check.rehearsals,
+                "proofs": estop_check.proofs,
+            },
+        )
+
+    runner.register("Emergency stop", "Verify the stop path is intact", test_estop_integrity,
+                    severity=Severity.FALLBACK, category="safety")
     runner.register("Motor controller link", "Verify the link to the ESP32", test_motor_link,
                     severity=Severity.CRITICAL, category="hardware")
     runner.register("Actuator supply", "Check the actuator bus voltage", test_servo_power,

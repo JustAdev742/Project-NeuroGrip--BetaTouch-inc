@@ -75,6 +75,9 @@ What they assert:
 - **Degradation goes towards user control.** Losing vision, or the model, or
   confidence, must produce a hand the user still directly controls — never a
   hand that stops responding.
+- **The emergency stop still works.** `TestEstopIntegrity` covers the periodic
+  self-check that watches the stop path between manual tests, including the
+  case that motivated it: a listener registration silently disappearing.
 
 ---
 

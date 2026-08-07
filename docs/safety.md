@@ -110,11 +110,63 @@ check in `decision_tick` remains as a 100 Hz backstop for stops the monitor rais
 on its own — but an emergency stop must not wait for a scheduler group that may
 itself be the thing that has stalled.
 
+### Verifying the stop still works
+
 That listener registration is exactly the kind of wiring that goes missing
-silently: the mechanism existed and nothing used it until the production-readiness
-audit, so `neurogrip test estop` and
-`test_emergency_stop_reaches_the_actuators_without_the_decision_loop` now both
-fail if it is ever removed again.
+silently. It was absent for the whole first version of this system: everything
+worked, every test passed, and the stop reached the actuators only via the
+decision loop. Nothing about the device's behaviour would have revealed it before
+the day someone needed the stop.
+
+So the stop is checked continuously rather than only when a human runs
+`neurogrip test estop`. The path has two halves and they get different treatment,
+because only one can be exercised for free.
+
+**The software chain** — `EmergencyStop` → listeners → `HandController`.
+`EmergencyStop.rehearse()` calls every listener with a record marked
+`rehearsal`; the controller acknowledges it and does nothing else. Costs nothing,
+so it runs **every 30 seconds**. It proves the record arrives. It deliberately
+proves no more than that.
+
+**The hardware chain** — `HandController` → `ServoBus` → firmware → drive off.
+This one cannot be faked: proving the actuators would stop means stopping them.
+The proof test really does cut drive, confirms from *telemetry* that the firmware
+honoured it, and re-arms. It runs at startup and then **every 6 hours**, and only
+when the hand is open, idle, holding nothing and under no motion command.
+
+Measured window: **5 ms of drive-down, zero finger movement**. The fingers are
+already at rest and the tendon return springs hold them open, so a passing check
+is imperceptible. A command issued inside that window is refused and re-submitted
+10 ms later by the next decision cycle.
+
+```toml
+[safety.estop_check]
+rehearsal_interval_s = 30.0
+proof_enabled = true
+proof_interval_s = 21600.0
+```
+
+Two design points worth stating, because the obvious choices are wrong:
+
+*A routine check must not look like a real stop.* A proof test that logged
+`CRITICAL` and flushed an incident file every six hours would bury genuine stops
+among hundreds of fakes and teach whoever reads the logs to skip them. Diagnostic
+stops are logged at `INFO`, carry `diagnostic: true` on the event, do not trigger
+a black-box flush, and show on the dashboard as "self-check" rather than
+"emergency stop". They are still *recorded* — they are part of what happened —
+they are just not treated as incidents.
+
+*A failure degrades to Manual rather than stopping the hand.* The opposite
+reading is tempting: a broken e-stop sounds like grounds for refusing to run.
+But the stop exists to catch motion the user did not ask for, and in Manual every
+motion is directly driven by muscle — releasing the contraction stops it.
+Disabling assistance removes the hazard the stop was guarding; stopping the hand
+outright would take someone's limb away because a *backup* mechanism is unproven.
+The failure is sticky: a later pass does not clear it, because a stop that failed
+once is not trustworthy until someone has looked at why.
+
+`neurogrip diagnose` reports the standing verdict, so it says whether the stop is
+known to work rather than assuming it does.
 
 The cancel gesture bypasses the normal dwell machinery entirely: it is checked
 before intent freshness and before the confidence gate, because an abort must
@@ -290,11 +342,17 @@ case:
   reconnect. That is correct but not robust: a controller that reboots while the
   host is unresponsive runs on defaults until the host notices.
   (`TODO(persistence)` in `firmware/.../main.cpp`.)
-- **The emergency stop is tested, not continuously monitored.**
-  `neurogrip test estop` verifies the whole path — stop, de-energise, latch — but
-  only when someone runs it. There is no periodic self-check that the path is
-  still intact, and no way to detect a stop that has silently stopped working
-  between tests.
+- **The periodic e-stop check cannot prove the parts it cannot reach.** The
+  rehearsal proves the signalling path and the proof test proves that commanding
+  a stop de-energises the drive. Neither proves the *trigger* sources still work:
+  nothing verifies that the hardware stop button is still wired, or that a
+  critical fault would still call `trigger_estop`. Those remain covered only by
+  `neurogrip test estop` and by the unit tests.
+- **The proof test needs an idle hand.** A device in continuous use may go a long
+  time without meeting the gating conditions, and the hardware half of the check
+  is skipped silently while that is true. `neurogrip diagnose` distinguishes
+  "signalling path verified" from "fully verified", so the difference is visible,
+  but nothing escalates when a proof test has not run for an unusually long time.
 
 Anyone taking this beyond a prototype should start with the second and third
 items.

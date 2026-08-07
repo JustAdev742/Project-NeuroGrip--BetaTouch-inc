@@ -483,3 +483,33 @@ class TestAuditFixesInTheAssembledSystem:
             assert any(d.label == "bottle" for d in latest.detections)
         finally:
             app.stop()
+
+    def test_the_emergency_stop_is_verified_while_the_system_runs(self, application):
+        """The stop path is checked continuously, not only when someone asks."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check = application.estop_check
+        assert check is not None
+
+        _run(application, 2.0)
+        assert check.rehearsals >= 1
+        assert check.failures == 0
+        assert check.status is not IntegrityStatus.FAILED
+        # And the routine verification left the hand exactly as it found it.
+        assert application.controller.state.enabled
+        assert not application.controller.state.estop
+
+    def test_losing_the_estop_wiring_disables_ai_assistance(self, application):
+        """A broken backup costs assistance, not the user's hand."""
+        check = application.estop_check
+        assert check is not None
+        _run(application, 1.0)
+
+        # Simulate a refactor dropping the listener registration.
+        application.safety.estop._listeners.clear()
+        _run(application, 40.0)
+
+        assert check.status.value == "failed"
+        assert not application.safety.state.ai_allowed
+        # Direct control survives: the hand is still the user's to move.
+        assert application.safety.state.motion_allowed

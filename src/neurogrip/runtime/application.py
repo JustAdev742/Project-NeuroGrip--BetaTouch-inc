@@ -59,6 +59,7 @@ from ..modes.base import ModeContext
 from ..modes.manager import ModeManager
 from ..modes.profiles import build_modes
 from ..safety.estop import EmergencyStop, EstopSource
+from ..safety.integrity import EstopIntegrityRule, EstopSelfCheck
 from ..safety.monitor import SafetyMonitor
 from ..safety.rules import SafetyContext
 from ..safety.watchdog import WatchdogGroup
@@ -107,6 +108,8 @@ class Application:
     profiles: ProfileStore | None = None
     #: Unclean-shutdown detection.
     run_marker: RunMarker | None = None
+    #: Periodic verification that the emergency stop still works.
+    estop_check: EstopSelfCheck | None = None
     #: True when the previous run ended without a clean shutdown.
     recovered_from_crash: bool = False
     #: Where a completed servo calibration is written.
@@ -299,6 +302,18 @@ class Application:
         self.controller.tick()
         self.safety.watchdogs.kick("control")
 
+    def integrity_tick(self) -> None:
+        """Verify the emergency stop still works. Runs in the diagnostics group.
+
+        Suppressed while servo calibration owns the hand: the proof test would
+        see an idle, open hand and cut drive in the middle of a measurement.
+        """
+        if self.estop_check is None:
+            return
+        if self.servo_calibration is not None and self.servo_calibration.active:
+            return
+        self.estop_check.tick()
+
     def checkpoint(self) -> None:
         """Refresh the run marker. Cheap, and runs in the diagnostics group."""
         if self.run_marker is None:
@@ -474,13 +489,24 @@ def build_application(
     # the monitor raises on its own; an e-stop must not wait for a scheduler
     # group that may itself be the thing that has stalled.
     #
-    # Engage only. Listeners also fire on release, and clearing the latch is a
-    # separate, deliberately manual step — see `Application.clear_emergency_stop`.
-    def _on_estop(record) -> None:
-        if record.engaged:
-            controller.emergency_stop(record.reason)
+    # This one registration is the entire software path from the stop to the
+    # actuators, and it was missing for the whole first version of this system
+    # without changing any observable behaviour. `EstopSelfCheck` below exists so
+    # that losing it again is noticed within thirty seconds rather than on the
+    # day someone needs the stop.
+    estop.add_listener(controller.on_estop_record)
 
-    estop.add_listener(_on_estop)
+    integrity_section = config.section("safety.estop_check")
+    estop_check = EstopSelfCheck(
+        estop,
+        controller,
+        clock,
+        bus,
+        rehearsal_interval_s=integrity_section.get_float("rehearsal_interval_s", 30.0),
+        proof_interval_s=integrity_section.get_float("proof_interval_s", 21600.0),
+        proof_enabled=integrity_section.get_bool("proof_enabled", True),
+    )
+    safety.add_rule(EstopIntegrityRule(estop_check))
 
     # -- EMG ------------------------------------------------------------------
     emg_section = config.section("emg")
@@ -603,6 +629,7 @@ def build_application(
         power=hardware.power,
         model_registry=models,
         clock=clock,
+        estop_check=estop_check,
     )
 
     # -- UI -------------------------------------------------------------------
@@ -687,6 +714,7 @@ def build_application(
         run_marker=RunMarker(
             config.get_str("system.state_path", "var/run-state.json"), version=__version__
         ),
+        estop_check=estop_check,
         blackbox=blackbox,
         telemetry=telemetry,
     )
@@ -707,7 +735,7 @@ def build_application(
     scheduler.add(
         "diagnostics",
         rates.get_float("diagnostics_hz", 2.0),
-        lambda: (diagnostics.tick(), application.checkpoint()),
+        lambda: (diagnostics.tick(), application.integrity_tick(), application.checkpoint()),
         priority=10,
     )
 

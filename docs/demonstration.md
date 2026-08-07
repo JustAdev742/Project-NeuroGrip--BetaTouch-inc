@@ -190,11 +190,21 @@ decode, the mapping from parallel-jaw predictions to a five-finger hand, and the
 classical fallback that runs when no weights are present.
 
 **"How do you know the emergency stop works?"**
-`neurogrip test estop`. It commands motion, triggers the stop, and checks three
-things — motion ceased, drive de-energised, and the latch held so the next command
-is refused. The third is the one that matters and the one nothing else reveals.
-An emergency stop that has never been tested is an assumption, not a safety
-system.
+Two answers. On demand, `neurogrip test estop` commands motion, triggers the stop
+and checks three things — motion ceased, drive de-energised, and the latch held so
+the next command is refused. The third is the one that matters and the one nothing
+else reveals.
+
+But a test you have to remember to run is not much of a guarantee, so the stop
+also checks itself while the system runs: it rehearses the signalling path every
+30 seconds, and every 6 hours — when the hand is open and idle — it proves the
+hardware path by actually cutting drive for 5 ms and watching it happen. Failure
+disables AI assistance and says so; it does not stop the hand, because in Manual
+every motion is directly driven by muscle.
+
+That check exists for a specific reason worth admitting: the registration
+connecting the stop to the motion controller was missing from the first version
+of this system, and nothing revealed it. Everything worked. Every test passed.
 
 **"What is not finished?"**
 Answer this one straight; it lands better than deflecting. No trained weights ship

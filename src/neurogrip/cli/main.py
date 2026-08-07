@@ -227,6 +227,17 @@ def command_diagnose(args: argparse.Namespace) -> int:
     application = build_application(config)
     application.services.start_all()
     try:
+        if application.estop_check is not None:
+            # Establish a verdict before reporting one. In a long-running system
+            # the checker paces itself, but a one-shot `diagnose` would otherwise
+            # always report "not yet verified" — and a warning that always fires
+            # is a warning people learn to skip.
+            application.estop_check.tick()
+            for _ in range(20):
+                application.clock.sleep(0.01)
+                application.controller.tick()
+                application.estop_check.tick()
+
         report = application.diagnostics.selftest.run(allow_motion=False)
         print("\nSelf-test")
         print("─" * 60)

@@ -52,12 +52,12 @@ from neurogrip.safety.watchdog import WatchdogGroup
 # ---------------------------------------------------------------------------
 
 
-def _hand(clock, tendons=None):
+def _hand(clock, tendons=None, bus=None):
     """A started, enabled controller over a simulated bus with known tendons."""
     from neurogrip.core.events import EventBus
 
     servo = SimulatedServoBus(clock, tendons=tendons)
-    controller = HandController(servo, clock, EventBus(clock))
+    controller = HandController(servo, clock, bus or EventBus(clock))
     controller.start()
     controller.enable()
     for _ in range(50):
@@ -830,3 +830,274 @@ class TestAnyGraspAdapter:
             center_x=0.5, center_y=0.5, angle=0.0, width=0.2, quality=0.9, approach_vector=None
         )
         assert planner._misalignment_deg(planar) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Emergency-stop integrity checking
+# ---------------------------------------------------------------------------
+
+
+class TestEstopIntegrity:
+    """A stop that has never been checked is an assumption, not a safety system.
+
+    These cover the periodic checker: the cheap rehearsal that proves the
+    signalling path, and the gated proof test that proves the hardware one.
+    """
+
+    def _rig(self, clock, *, listen=True, **kwargs):
+        from neurogrip.core.events import EventBus
+        from neurogrip.safety.integrity import EstopSelfCheck
+
+        controller, servo = _hand(clock)
+        estop = EmergencyStop(clock)
+        if listen:
+            estop.add_listener(controller.on_estop_record)
+        check = EstopSelfCheck(estop, controller, clock, EventBus(clock), **kwargs)
+        return check, estop, controller, servo
+
+    def _run(self, check, controller, clock, seconds, step=0.005):
+        for _ in range(int(seconds / step)):
+            clock.advance(step)
+            check.tick()
+            controller.tick()
+
+    # -- the rehearsal ----------------------------------------------------
+
+    def test_a_rehearsal_does_not_touch_the_hand(self, clock: SimulatedClock):
+        check, estop, controller, _ = self._rig(clock, proof_enabled=False)
+        self._run(check, controller, clock, 1.0)
+
+        assert check.rehearsals >= 1
+        assert not controller.state.estop
+        assert controller.state.enabled
+        assert estop.engage_count == 0, "a rehearsal must never latch the stop"
+
+    def test_a_rehearsal_alone_does_not_claim_full_verification(
+        self, clock: SimulatedClock
+    ):
+        """It proves the record arrives, not that the actuators would stop."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, _, controller, _ = self._rig(clock, proof_enabled=False)
+        self._run(check, controller, clock, 1.0)
+        assert check.status is IntegrityStatus.CHAIN_OK
+
+    def test_a_missing_listener_is_caught(self, clock: SimulatedClock):
+        """The exact defect this whole mechanism exists for."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, _, controller, _ = self._rig(clock, listen=False, proof_enabled=False)
+        self._run(check, controller, clock, 1.0)
+
+        assert check.status is IntegrityStatus.FAILED
+        assert check.last_failure is not None
+        assert "nothing is listening" in check.last_failure.message
+
+    def test_a_listener_that_does_not_reach_the_controller_is_caught(
+        self, clock: SimulatedClock
+    ):
+        """A registration that exists but goes somewhere else is still broken."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, estop, controller, _ = self._rig(clock, listen=False, proof_enabled=False)
+        estop.add_listener(lambda record: None)  # plausible, and useless
+        self._run(check, controller, clock, 1.0)
+
+        assert check.status is IntegrityStatus.FAILED
+        assert "does not reach the motion controller" in check.last_failure.message
+
+    def test_rehearsals_repeat_on_the_configured_interval(self, clock: SimulatedClock):
+        check, _, controller, _ = self._rig(
+            clock, proof_enabled=False, rehearsal_interval_s=5.0
+        )
+        self._run(check, controller, clock, 21.0)
+        # One immediately, then one per interval.
+        assert check.rehearsals == 5
+
+    def test_a_wire_removed_later_is_noticed(self, clock: SimulatedClock):
+        """Regressions happen after the first green run, not before it."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, estop, controller, _ = self._rig(
+            clock, proof_enabled=False, rehearsal_interval_s=5.0
+        )
+        self._run(check, controller, clock, 1.0)
+        assert check.status is IntegrityStatus.CHAIN_OK
+
+        estop._listeners.clear()  # simulate a refactor dropping the registration
+        self._run(check, controller, clock, 6.0)
+        assert check.status is IntegrityStatus.FAILED
+
+    # -- the proof test ---------------------------------------------------
+
+    def test_the_proof_test_cuts_drive_and_re_arms(self, clock: SimulatedClock):
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, _, controller, _ = self._rig(clock, proof_interval_s=60.0)
+        self._run(check, controller, clock, 2.0)
+
+        assert check.proofs >= 1
+        assert check.failures == 0
+        assert check.status is IntegrityStatus.VERIFIED
+        # And the hand is usable again afterwards.
+        assert controller.state.enabled
+        assert not controller.state.estop
+
+    def test_a_stop_that_does_not_de_energise_is_caught(self, clock: SimulatedClock):
+        """The failure the proof test exists to find."""
+        check, _, controller, servo = self._rig(clock, proof_interval_s=60.0)
+
+        # A firmware regression: the stop is accepted and ignored.
+        servo.emergency_stop = lambda: None
+        self._run(check, controller, clock, 3.0)
+
+        assert check.last_failure is not None
+        assert "not de-energised" in check.last_failure.message
+
+    def test_the_proof_test_waits_for_an_idle_hand(self, clock: SimulatedClock):
+        check, _, controller, _ = self._rig(clock, proof_interval_s=0.0)
+        controller.move_to(HandPose.closed_hand(), force=0.4, speed=0.2)
+        clock.advance(0.005)
+        controller.tick()
+
+        # Moving: the check must not interrupt.
+        for _ in range(40):
+            clock.advance(0.005)
+            check.tick()
+            controller.tick()
+        assert check.proofs == 0
+        assert not controller.state.estop
+
+    def test_the_proof_test_never_runs_while_holding(self, clock: SimulatedClock):
+        from neurogrip.hal.servo.simulated import ContactModel
+
+        check, _, controller, servo = self._rig(clock, proof_interval_s=0.0)
+        servo.set_contact(ContactModel.uniform(0.4))
+        controller.move_to(HandPose.closed_hand(), force=0.6, speed=0.8)
+        self._run(check, controller, clock, 3.0)
+
+        assert check.proofs == 0, "cutting drive on a held object would drop it"
+
+    def test_the_proof_test_can_be_disabled(self, clock: SimulatedClock):
+        check, _, controller, _ = self._rig(clock, proof_enabled=False)
+        self._run(check, controller, clock, 5.0)
+        assert check.proofs == 0
+        assert check.rehearsals >= 1
+
+    def test_a_failure_is_sticky(self, clock: SimulatedClock):
+        """A stop that failed once is not trustworthy because it passed later."""
+        from neurogrip.safety.integrity import IntegrityStatus
+
+        check, estop, controller, _ = self._rig(
+            clock, proof_enabled=False, rehearsal_interval_s=1.0
+        )
+        listeners = list(estop._listeners)
+        estop._listeners.clear()
+        self._run(check, controller, clock, 1.0)
+        assert check.status is IntegrityStatus.FAILED
+
+        estop._listeners.extend(listeners)
+        self._run(check, controller, clock, 5.0)
+        assert check.status is IntegrityStatus.FAILED
+        assert check.last_result.passed, "later checks still run and still pass"
+
+        check.reset("investigated")
+        self._run(check, controller, clock, 2.0)
+        assert check.status is IntegrityStatus.CHAIN_OK
+
+    # -- the fault it raises ----------------------------------------------
+
+    def test_a_failure_degrades_to_manual_rather_than_stopping_the_hand(
+        self, clock: SimulatedClock
+    ):
+        """A broken backup must not cost the user their limb."""
+        from neurogrip.core.errors import Severity
+        from neurogrip.safety.integrity import EstopIntegrityRule
+        from neurogrip.safety.rules import SafetyContext
+
+        check, _, controller, _ = self._rig(clock, listen=False, proof_enabled=False)
+        self._run(check, controller, clock, 1.0)
+
+        rule = EstopIntegrityRule(check)
+        fault = rule.evaluate(SafetyContext(timestamp=clock.monotonic(), hand=controller.state))
+        assert fault is not None
+        assert fault.severity is Severity.FALLBACK
+        assert fault.severity is not Severity.CRITICAL
+
+    def test_no_fault_while_the_stop_is_healthy(self, clock: SimulatedClock):
+        from neurogrip.safety.integrity import EstopIntegrityRule
+        from neurogrip.safety.rules import SafetyContext
+
+        check, _, controller, _ = self._rig(clock)
+        self._run(check, controller, clock, 2.0)
+        rule = EstopIntegrityRule(check)
+        assert rule.evaluate(
+            SafetyContext(timestamp=clock.monotonic(), hand=controller.state)
+        ) is None
+
+    # -- announcement ------------------------------------------------------
+
+    def test_a_proof_test_does_not_look_like_a_real_stop(self, clock: SimulatedClock):
+        """Routine checks must not bury real incidents."""
+        from neurogrip.core.events import EventBus
+        from neurogrip.core.topics import Topics
+        from neurogrip.safety.integrity import EstopSelfCheck
+
+        bus = EventBus(clock)
+        events = []
+        bus.subscribe(Topics.ESTOP_ENGAGED, events.append)
+
+        controller, _ = _hand(clock, bus=bus)
+        estop = EmergencyStop(clock)
+        estop.add_listener(controller.on_estop_record)
+        check = EstopSelfCheck(estop, controller, clock, bus, proof_interval_s=60.0)
+        self._run(check, controller, clock, 2.0)
+
+        assert events, "the event is still recorded — it is part of what happened"
+        assert all(e.payload["diagnostic"] for e in events)
+
+    def test_a_real_stop_is_not_marked_diagnostic(self, clock: SimulatedClock):
+        from neurogrip.core.events import EventBus
+        from neurogrip.core.topics import Topics
+
+        bus = EventBus(clock)
+        events = []
+        bus.subscribe(Topics.ESTOP_ENGAGED, events.append)
+        servo = SimulatedServoBus(clock)
+        controller = HandController(servo, clock, bus)
+        controller.start()
+        controller.emergency_stop("a real one")
+
+        assert len(events) == 1
+        assert not events[0].payload["diagnostic"]
+
+    def test_a_diagnostic_stop_does_not_flush_the_black_box(self, clock, tmp_path):
+        """An incident file every few hours would bury the real ones.
+
+        Events are delivered to the recorder on a worker thread, so the handler
+        is driven directly here rather than through the bus — the decision under
+        test is "does this event count as an incident", and racing a thread to
+        observe it would make the test flaky for no added coverage.
+        """
+        from neurogrip.core.events import Event, EventBus
+        from neurogrip.core.topics import Topics
+        from neurogrip.telemetry import BlackBoxRecorder
+
+        recorder = BlackBoxRecorder(
+            EventBus(clock), clock, directory=str(tmp_path / "bb")
+        )
+        records = tmp_path / "bb"
+
+        def estop_event(diagnostic: bool) -> Event:
+            return Event(
+                topic=Topics.ESTOP_ENGAGED,
+                payload={"reason": "test", "diagnostic": diagnostic},
+                timestamp=clock.monotonic(),
+                source="control",
+            )
+
+        recorder._on_event(estop_event(diagnostic=True))
+        assert not list(records.glob("*.json")), "a routine check is not an incident"
+
+        recorder._on_event(estop_event(diagnostic=False))
+        assert list(records.glob("*.json")), "a real stop still writes a record"

@@ -7,7 +7,10 @@ Three cooperating mechanisms, at three timescales:
 * :mod:`~neurogrip.safety.rules` — *"is everything within limits?"* Independent
   predicates over grip force, current, temperature, communication, battery,
   sensor quality and servo tracking.
-* :mod:`~neurogrip.safety.monitor` — folds both into a single
+* :mod:`~neurogrip.safety.integrity` — *"does the stop still work?"* Periodically
+  rehearses the e-stop signalling path and, when the hand is idle, proves the
+  hardware path by actually cutting drive and watching it happen.
+* :mod:`~neurogrip.safety.monitor` — folds these into a single
   :class:`~neurogrip.safety.monitor.SafetyState` that gates motion and AI
   assistance, and engages the latching
   :class:`~neurogrip.safety.estop.EmergencyStop` on critical faults.
@@ -35,6 +38,7 @@ firmware safes the actuators by itself.
 from __future__ import annotations
 
 from .estop import EmergencyStop, EstopRecord, EstopSource
+from .integrity import EstopIntegrityRule, EstopSelfCheck, IntegrityStatus
 from .monitor import SafetyMonitor, SafetyState
 from .rules import DEFAULT_RULES, Fault, SafetyContext, SafetyRule
 from .watchdog import Watchdog, WatchdogExpiry, WatchdogGroup
@@ -42,9 +46,12 @@ from .watchdog import Watchdog, WatchdogExpiry, WatchdogGroup
 __all__ = [
     "DEFAULT_RULES",
     "EmergencyStop",
+    "EstopIntegrityRule",
     "EstopRecord",
+    "EstopSelfCheck",
     "EstopSource",
     "Fault",
+    "IntegrityStatus",
     "SafetyContext",
     "SafetyMonitor",
     "SafetyRule",
