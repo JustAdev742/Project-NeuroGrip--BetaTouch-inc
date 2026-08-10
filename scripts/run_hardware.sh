@@ -1,27 +1,17 @@
 #!/usr/bin/env bash
-# Run in hardware mode — real GPIO, I2C, camera
+# Run against real hardware.
+#
+# Refuses to start if the motor controller is not present, because a hand that
+# silently falls back to simulation would be worse than one that says why it
+# will not start.
 set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -f .env ] && set -a && . ./.env && set +a
 
-PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$PROJ_DIR"
-
-# Activate venv if it exists
-if [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
+PORT="${NEUROGRIP__SERVO__PORT:-/dev/ttyUSB0}"
+if [ ! -e "$PORT" ]; then
+    echo "error: motor controller not found at $PORT" >&2
+    echo "hint:  ls /dev/serial/by-id/   or run with --profile simulation" >&2
+    exit 1
 fi
-
-# Verify hardware prerequisites
-echo "  Checking hardware..."
-if ! command -v i2cdetect &>/dev/null; then
-    echo "  ⚠️  i2c-tools not installed. Run: sudo apt install i2c-tools"
-fi
-if [ ! -e /dev/i2c-1 ]; then
-    echo "  ⚠️  I2C bus not found. Enable with: sudo raspi-config"
-fi
-if ! ls /dev/video* &>/dev/null; then
-    echo "  ⚠️  No camera found at /dev/video*"
-fi
-
-export PYTHONPATH="$PROJ_DIR/src"
-export PROSTHETIC_SERVO_DRIVER=lgpio
-exec python3 -m app.main --config configs/default.yaml
+exec python3 -m neurogrip run --profile hardware "$@"

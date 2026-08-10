@@ -1,0 +1,31 @@
+# Model manifest.
+#
+# Weights are not in version control — they are large binary artefacts with their
+# own release cycle. This file declares what should be present so the system can
+# check it and report honestly when something is missing.
+#
+# Checksums matter beyond tidiness: silently loading a *different* model than the
+# one the affordance thresholds were tuned against would change the hand's
+# behaviour with no visible cause.
+#
+# Verify with:  neurogrip diagnose
+
+[models.hggd_mcu]
+file = "hggd_mcu/hggd_mcu_int8.onnx"
+version = "1.0.0"
+input = "1x1x128x160"
+description = "HGGD-MCU heatmap-guided grasp detector, int8 quantised"
+# Not required: without it the backend falls back to the classical graspability
+# session, which is degraded but fully functional. The hand still works.
+required = false
+# sha256 = "…"   # fill in when the artefact is published
+# source = "…"
+
+[models.gestures]
+file = "gestures/user_lda.json"
+version = "1.0.0"
+description = "Per-user linear gesture model (LDA over the Hudgins feature set)"
+required = false
+# Deliberately absent. A linear model trained on one person's electrodes is
+# worthless on another's, so this must be fitted per user from recorded sessions.
+# Until it exists the threshold classifier is used, which needs no training data.

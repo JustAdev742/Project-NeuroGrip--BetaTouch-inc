@@ -1,12 +1,37 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
 .venv/
 venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
 .env
-.DS_Store
-dist/
-build/
+
+# Runtime artefacts (blackbox recordings, logs, user profiles, captured EMG)
+var/
 *.log
-assets/models/*.pt
+recordings/
+!recordings/.gitkeep
+
+# Model weights are distributed out-of-band; see docs/vision.md
+models/**/*.onnx
+models/**/*.tflite
+models/**/*.pt
+models/**/*.bin
+
+# Firmware build output
+firmware/**/.pio/
+firmware/**/.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,38 @@
+# systemd unit for the NeuroGrip runtime.
+#
+#   sudo cp scripts/neurogrip.service /etc/systemd/system/
+#   sudo systemctl enable --now neurogrip
+#
+# Restart=always matters: if the process dies, the ESP32 watchdog has already
+# safed the hand, and the fastest route back to a working limb is to restart.
+
+[Unit]
+Description=NeuroGrip prosthetic hand controller
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=neurogrip
+WorkingDirectory=/opt/neurogrip
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/neurogrip/.venv/bin/neurogrip run --profile hardware
+Restart=always
+RestartSec=2
+
+# The control loop must not be starved by background work.
+Nice=-10
+IOSchedulingClass=realtime
+
+# Least privilege: the process needs serial, video and its own state directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/neurogrip/var
+PrivateTmp=true
+DeviceAllow=/dev/ttyUSB0 rw
+DeviceAllow=/dev/ttyACM0 rw
+DeviceAllow=char-video4linux rw
+
+[Install]
+WantedBy=multi-user.target

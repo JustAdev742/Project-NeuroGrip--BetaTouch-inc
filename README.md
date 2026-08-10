@@ -1,140 +1,318 @@
-# 🤖 NeuroGrip — AI-Assisted Prosthetic Hand
+# NeuroGrip
 
-An intelligent prosthetic hand prototype that uses **EMG signals** for user intent and **computer vision** for automatic grasp classification. Built for a school showcase, inspired by [DeGol et al. (IEEE EMBC 2016)](https://pmc.ncbi.nlm.nih.gov/articles/PMC5325038/).
+**A shared-control software stack for an AI-assisted, tendon-driven robotic
+prosthetic hand.**
 
-> ⚠️ **Educational prototype only** — not a medical device.
+```
+       EMG  ──▶  intent  ──┐
+                           ├──▶  fusion  ──▶  motion  ──▶  five tendon-driven fingers
+    camera  ──▶  grasp  ───┘
+                plan
+```
+
+> ⚠️ **Research prototype. Not a medical device.** Not evaluated or approved by
+> any regulatory body. See [`docs/safety.md`](docs/safety.md).
 
 ---
 
-## Features
+## The rule
 
-| Feature | Description |
+> **The AI never replaces the user. The user is always in control.**
+>
+> The AI only assists after understanding both what the user intends (EMG) and
+> what they are interacting with (camera). The user decides **when**. The AI
+> decides **how**.
+
+This is not a slogan in a README — it is enforced structurally:
+
+- [`DecisionFusion`](src/neurogrip/fusion/fusion.py) **cannot** emit a motion
+  decision without a fresh, confident, motion-requesting intent from the user.
+  The grasp planner is not even called until that gate has been passed.
+- [`HandController`](src/neurogrip/control/controller.py) is the **only**
+  component that writes to the actuators, so every limit has exactly one place
+  to be enforced and nothing can bypass it.
+- Every failure in the assistive path — no camera, stale vision, missing model,
+  unconfident planner, planner exception — degrades to **direct user control**,
+  never to a hand that will not move.
+
+All three are tested, not asserted:
+[`TestTheAiNeverActsAlone`](tests/unit/test_fusion_and_safety.py),
+[`TestSharedControlInvariants`](tests/integration/test_system.py), and the
+`no-intent-no-motion` scenario.
+
+---
+
+## Try it in 30 seconds
+
+No hardware, no dependencies beyond Python 3.11:
+
+```bash
+git clone https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc.git
+cd Project-NeuroGrip--BetaTouch-inc
+
+# Run five scenarios against the fully simulated hand
+PYTHONPATH=src python3 -m neurogrip simulate all
+```
+
+```
+grasp-bottle: PASS (8.0 s)
+  ✓ hand is holding the object (contacts: 5)
+  ✓ AI selected a grasp (cylindrical)
+  ✓ grip force 0.65 within the ceiling
+no-intent-no-motion: PASS (6.0 s)
+  ✓ hand did not move without user intent (max travel 0.000)
+  ✓ the camera did see the object (so inaction was a decision, not blindness)
+user-cancel: PASS (6.0 s)
+vision-lost: PASS (6.0 s)
+fragile-object: PASS (7.0 s)
+
+5/5 scenarios passed
+```
+
+Then watch the interface, live, in your terminal:
+
+```bash
+PYTHONPATH=src python3 -m neurogrip run --profile simulation --duration 20
+```
+
+The core runtime is **standard library only**. NumPy, OpenCV, ONNX Runtime and
+pyserial are optional extras behind guarded imports, so the whole stack runs and
+is tested with no install step.
+
+---
+
+## The system
+
+```mermaid
+flowchart LR
+    EMG["EMG<br/>2 ch @ 1 kHz"] --> PIPE["filter · calibrate<br/>features · quality"]
+    PIPE --> INTENT["intent<br/>dwell · cancel"]
+    CAM["camera<br/>30 fps"] --> VIS["HGGD-MCU<br/>track · depth"]
+    VIS --> PLAN["grasp planner"]
+    INTENT --> FUSE(("fusion<br/>7 gates"))
+    VIS --> FUSE
+    PLAN --> FUSE
+    FUSE --> CTRL["hand controller<br/><i>the only writer</i>"]
+    CTRL --> HW["ESP32 · 5 servos"]
+    SAFE["safety"] -. veto .-> FUSE
+    SAFE -. e-stop .-> CTRL
+```
+
+| Subsystem | What it does |
 |---|---|
-| **EMG Control** | User controls the hand via muscle signals — AI never overrides the user |
-| **Vision Grasp** | Palm camera + YOLO classifies objects → recommends optimal grip |
-| **8 Hand Modes** | Normal (AI+EMG), Typing, Gaming, Mouse, Basketball, Tennis, Baseball, Cricket |
-| **Auto-Training** | Capture & label photos of unknown objects for model fine-tuning |
-| **Smartwatch Dashboard** | Live telemetry, mode switching, mini games, GitHub updates |
-| **21 Grip Profiles** | Each tuned for 180° / 1.5 kg-cm servos with sine-curve motion |
-| **Safe Fallback** | Any failure → SAFE grip + emergency stop |
+| [`core`](src/neurogrip/core) | Types, clock, events, config, DI, lifecycle. No domain knowledge. |
+| [`hal`](src/neurogrip/hal) | Every device behind a `Protocol`. No pin number escapes this package. |
+| [`emg`](src/neurogrip/emg) | Filters, calibration, features, quality → `IntentEstimate`. |
+| [`vision`](src/neurogrip/vision) | Swappable backends → `VisionResult`. Ships **HGGD-MCU**. |
+| [`ai`](src/neurogrip/ai) | Affordance database + grasp-planner chain. Decides *how*, never *whether*. |
+| [`fusion`](src/neurogrip/fusion) | Seven ordered gates combining intent, perception, mode and safety. |
+| [`control`](src/neurogrip/control) | Trajectories, limits, adaptive grip force, kinematics. |
+| [`safety`](src/neurogrip/safety) | Watchdogs, rules, latching e-stop. |
+| [`modes`](src/neurogrip/modes) | Manual · AI Assist · Sports · Training — parameter bundles, not control paths. |
+| [`training`](src/neurogrip/training) | Five exercises, adaptive difficulty, progress, achievements. |
+| [`ui`](src/neurogrip/ui) | Declarative screens; Tk, text or headless renderers. |
+| [`diagnostics`](src/neurogrip/diagnostics) | Health, metrics, self-tests, debug console. |
+| [`runtime`](src/neurogrip/runtime) | Rate-group scheduler and the composition root. |
+
+---
+
+## Operating modes
+
+| Mode | AI | Force | Speed | For |
+|---|---|---|---|---|
+| **Manual** | **off** | 0.70 | 1.0× | Learning, diagnostics, calibration, and any moment you want the hand to do exactly and only what you tell it. The camera is not merely ignored — it is not run. |
+| **AI Assist** | on | 0.75 | 1.0× | The primary mode. Point, contract, and the hand chooses a grip that suits what it sees. |
+| **Sports** | on | 0.80 | 1.6× | Reaction speed. Shorter dwell, no jerk limiting, faster loops. Still requires intent for every action. |
+| **Training** | **off** | 0.50 | 1.0× | Exercises and games. Assistance is off, because an exercise that measures you while an AI corrects you measures nothing. |
+
+A mode is a `FusionPolicy` + `MotionLimits` + `IntentSettings` + presentation
+flags. **A new mode cannot introduce a new way for the hand to move**, and
+therefore cannot introduce a new way to move it unsafely.
+
+---
+
+## The AI Assist loop
+
+```
+camera sees an object, continuously
+        │
+        ▼
+EMG detects the user's intention to grasp        ◀── nothing happens before this
+        │
+        ▼
+only now is the grasp planner consulted
+        │
+        ▼
+HGGD-MCU grasp → affordance check → force ceiling → hand configuration
+        │
+        ▼
+motion, scaled by the user's own muscle effort
+        │
+        ▼
+co-contract to cancel, at any moment
+```
+
+Perception runs continuously so a plan is *ready*. A plan is never *executed*
+without intent. Those are separate steps on purpose.
+
+---
+
+## Vision: HGGD-MCU
+
+The configured backend is **HGGD-MCU** — the edge profile of *Heatmap-Guided 6-DoF
+Grasp Detection* (Chen et al., RA-L 2023). It predicts a dense graspability
+heatmap plus per-anchor angle, width and quality, which answers "where on this
+object would a grasp work?" directly instead of making us infer it from a box.
+
+- Decoding (peak finding, sub-cell refinement, angle decode, grasp NMS) is
+  independent of the inference runtime and unit-tested against hand-built tensors.
+- Runtimes: ONNX Runtime, TFLite, or — with no weights present — a **classical
+  edge-density graspability session** that emits the same tensor layout. That is
+  a real (if modest) baseline, not a stub, and it is what keeps the system usable
+  when the model file is missing.
+- Backends are swappable by configuration and declare capability flags. A
+  detection-only backend simply omits `GRASP`, and the affordance planner takes
+  over.
+
+See [`docs/vision.md`](docs/vision.md).
+
+---
+
+## Command line
+
+```bash
+neurogrip run          # start the system
+neurogrip simulate     # run scenarios against simulated hardware
+neurogrip diagnose     # self-tests and a health report
+neurogrip train        # a training exercise in the terminal
+neurogrip record       # capture raw EMG to a file
+neurogrip replay       # replay a recording through the live pipeline
+neurogrip console      # interactive debug console
+neurogrip info         # system and hardware information
+
+neurogrip config --check          # validate configuration; non-zero on error
+neurogrip profile list|use|show   # saved user preferences
+
+neurogrip calibrate emg           # the user's muscles
+neurogrip calibrate servo         # tendon slack, per finger        ⚠ moves
+neurogrip calibrate camera        # field of view from known targets
+
+neurogrip test servos             # sweep every servo               ⚠ moves
+neurogrip test link               # link latency, loss, framing errors
+neurogrip test range              # per-finger travel and coupling  ⚠ moves
+neurogrip test estop              # stop, de-energise, latch        ⚠ moves
+```
+
+`test servos` is the one to use before the hand is built. It sweeps each channel
+individually — the only way to work out which physical servo is on which channel
+— and then all five together, which is what finds an undersized supply.
+
+```bash
+neurogrip test servos --finger thumb --cycles 3    # one channel, repeatedly
+neurogrip test servos --travel 0.4 --speed 0.3     # partly assembled: gentler
+```
+
+Every subcommand takes `--config`, `--profile`, `--set key=value` and
+`--log-level`.
+
+The `test` family is bring-up tooling, deliberately separate from `diagnose`:
+self-tests gate every startup and must be quick, while these move the hand and
+deliberately trigger the emergency stop to check it responds. See
+[installation.md](docs/installation.md) for the order to run them in.
+
+---
 
 ## Hardware
 
-- **Brain**: Raspberry Pi 4 Model B+ (Ubuntu 26.04 Resolute, kernel 6.18)
-- **Servos**: 5× SG90 — 180° range, 1.5 kg-cm torque, 50 Hz PWM
-- **EMG**: MyoWare 2.0 → ADS1115 16-bit ADC (I2C)
-- **Camera**: Pi Camera Module 3 or USB webcam (V4L2)
-- **Display**: Mini touchscreen for smartwatch dashboard
+| Part | Reference build |
+|---|---|
+| Host | Raspberry Pi 4B / CM4, 64-bit Linux |
+| Actuators | 5 × metal-gear micro servo, tendon-driven with high-strength fishing line |
+| Motor controller | BBC micro:bit v2 + edge breakout, NGP v1 over USB serial. PCA9685 for five channels |
+| Motor controller (alt.) | ESP32-S3, NGP v1 over USB-CDC at 921600 baud — adds current sensing |
+| EMG | 2-channel differential front end (flexor + extensor) → 24-bit ADC → 1 kHz |
+| Camera | Pi Camera Module 3 or any V4L2 device |
+| Display | 800×480 capacitive touchscreen |
 
-## Quick Start
+Firmware lives in [`firmware/esp32_motor_controller`](firmware/esp32_motor_controller).
+The wire protocol is documented in [`docs/protocol.md`](docs/protocol.md) and is
+byte-for-byte shared between `ngp_protocol.h` and `hal/protocol.py`.
 
-### Development (no hardware)
+**Swapping hardware** means implementing one `Protocol` and adding a branch to
+`HardwareFactory`. Nothing above the HAL changes.
+
+---
+
+## Development
+
 ```bash
-git clone https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc.git
-cd Project-NeuroGrip--BetaTouch-inc
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-./scripts/run_mock.sh
-# Dashboard: http://localhost:8000
+pip install -e ".[dev]"
+
+pytest                                  # everything
+pytest tests/unit -q                    # fast: no I/O, no sleeping
+pytest tests/integration -q             # the whole system, simulated
+ruff check src tests
+mypy src
 ```
 
-### Raspberry Pi (Ubuntu 26.04)
-```bash
-git clone https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc.git
-cd Project-NeuroGrip--BetaTouch-inc
-./scripts/setup_pi.sh    # installs everything + systemd service
-sudo reboot              # enable I2C + camera
-sudo systemctl start prosthetic-hand
-# Dashboard: http://<pi-ip>:8000
-```
+Tests never sleep. Every component takes a `Clock`, so the integration suite
+drives the entire application — real filters, real fusion gates, real ESP32
+driver over the real protocol against an in-process firmware emulator — under a
+`SimulatedClock`, far faster than real time.
 
-### Environment Overrides
-```bash
-export PROSTHETIC_SERVO_DRIVER=lgpio     # use modern GPIO backend
-export PROSTHETIC_DASHBOARD_PORT=8080    # change dashboard port
-export PROSTHETIC_SYSTEM_MOCK_MODE=true  # force mock mode
-```
+---
 
-## Architecture
+## Documentation
 
-```
-EMG Sensor → ADS1115 → EMG Reader → Intent (REST/OPEN/CLOSE/HOLD/CANCEL)
-                                          ↓
-Camera → YOLO Detector → Grip Selector ← Intent
-                              ↓
-                     Grip Library (21 profiles)
-                              ↓
-                   Servo Driver (lgpio/RPi.GPIO)
-                              ↓
-                      5× 180° Servos
-                              ↓
-                  Dashboard ← WebSocket ← Status
-```
+| | |
+|---|---|
+| [installation.md](docs/installation.md) | From clone to running, with or without hardware |
+| [architecture.md](docs/architecture.md) | Layers, invariants, runtime model, and why each decision was made |
+| [safety.md](docs/safety.md) | The hazard analysis, the response ladder, and an honest list of this design's limits |
+| [fusion.md](docs/fusion.md) | The seven gates, walked through one at a time |
+| [emg.md](docs/emg.md) | Signal chain, calibration, intent, recording and replay |
+| [vision.md](docs/vision.md) | Backends, HGGD-MCU, AnyGrasp, replay, tracking, depth |
+| [modes.md](docs/modes.md) | What actually differs between the four modes |
+| [hardware.md](docs/hardware.md) | Bill of materials, wiring, assembly, calibration, bring-up |
+| [protocol.md](docs/protocol.md) | NGP v1 wire format |
+| [configuration.md](docs/configuration.md) | Every setting, the layering rules, and validation |
+| [training.md](docs/training.md) | The exercises and what each one trains |
+| [api.md](docs/api.md) | The interfaces you implement to swap hardware or models |
+| [testing.md](docs/testing.md) | What the suite covers, and how to test perception |
+| [development.md](docs/development.md) | Conventions, testing strategy, how to extend |
+| [demonstration.md](docs/demonstration.md) | Showing this to someone in ten minutes |
 
-**Design Principle**: The user is always in control. EMG intent is the primary signal. Vision only *recommends* a grip — the user must confirm with EMG CLOSE. Manual overrides from the dashboard always take priority over AI.
+---
 
-## Project Structure
+## Status
 
-```
-├── assets/dashboard/     # Smartwatch UI (HTML/CSS/JS)
-├── configs/              # YAML configuration
-│   ├── default.yaml      # Main config (includes others)
-│   ├── servo.yaml        # Servo pins, limits, PWM specs
-│   ├── emg.yaml          # EMG thresholds, smoothing
-│   ├── vision.yaml       # YOLO model config
-│   └── grip_mappings.yaml
-├── scripts/
-│   ├── setup_pi.sh       # Ubuntu 26.04 setup
-│   ├── run_mock.sh       # Development mode
-│   ├── run_hardware.sh   # Hardware mode
-│   └── prosthetic-hand.service  # systemd unit
-├── src/
-│   ├── app/
-│   │   ├── main.py              # Entry point
-│   │   ├── controller/
-│   │   │   ├── main_controller.py  # Orchestrator
-│   │   │   └── state_machine.py    # IDLE→DETECTING→GRIPPING→HOLDING
-│   │   ├── models/
-│   │   │   ├── grip_types.py    # GripType + HandMode enums
-│   │   │   └── status.py        # SystemStatus dataclass
-│   │   └── utils/               # Config, logging, timing
-│   └── modules/
-│       ├── camera/              # OpenCV + V4L2
-│       ├── emg/                 # ADS1115 reader + mock
-│       ├── grip/                # Grip library + selector
-│       ├── servo/               # lgpio/RPi.GPIO driver + mock
-│       ├── vision/              # YOLO detector + mock
-│       └── dashboard/           # FastAPI server + WebSocket
-├── tests/                       # pytest suite (21 tests)
-├── training_data/               # Auto-captured training images
-└── pyproject.toml               # Modern Python packaging
-```
+Everything described here runs. The simulation harness exercises the complete
+stack end to end, and the test suite covers the safety invariants explicitly.
+392 tests pass, ruff is clean, and all five scenarios pass.
 
-## Hand Modes
+Not yet done, and marked `TODO` in the code where relevant:
 
-| Mode | EMG CLOSE | EMG HOLD | Use Case |
-|---|---|---|---|
-| Normal | AI-selected grip | — | Daily object handling |
-| Typing | Key tap | Home position | Keyboard input |
-| Gaming | Action press | WASD position | PC gaming |
-| Mouse | Click | Rest on mouse | Computer use |
-| Basketball 🏀 | Shooting release | Ball palm | Court play |
-| Tennis 🎾 | Backhand grip | Forehand grip | Racket sports |
-| Baseball ⚾ | Power swing | Bat grip | Batting |
-| Cricket 🏏 | Power swing | V-grip bat | Batting |
+- **No trained HGGD-MCU weights ship** — a model file is a separate artefact. The
+  classical fallback runs in its place and says so on the diagnostics screen.
+- **No per-user gesture model** — the threshold classifier is the default and
+  needs no training data. `tools/` for collecting labelled windows is sketched
+  but not built.
+- **Firmware update transport is not implemented** — the UI flow exists so it can
+  be designed and reviewed before any code can install anything onto a worn device.
+- **Grip force is estimated from motor current**, not measured. The
+  current-to-force constant is nominal.
+- **Firmware calibration is not persistent** — endpoints and tendon slack live in
+  the controller's RAM and are re-sent by the host at startup and after every
+  reconnect. NVS storage is not implemented.
+- **No independent hardware safety channel.** The e-stop is software on the same
+  MCU as the drive, and although it verifies itself continuously — rehearsing the
+  signalling path every 30 s and proving the drive-off path every 6 hours — a
+  certifiable device needs a contactor with no software in the path.
 
-## Tests
+The last item, and grip-force measurement, are where anyone taking this further
+should start.
 
-```bash
-PYTHONPATH=src python -m pytest tests/ -v
-```
+## Licence
 
-## Research Reference
-
-> DeGol, J., Akhtar, A., Manja, B., & Bretl, T. (2016). *Automatic Grasp Selection using a Camera in a Hand Prosthesis.* IEEE EMBC. [PMC5325038](https://pmc.ncbi.nlm.nih.gov/articles/PMC5325038/)
-
-Key finding: Palm camera + CNN achieves 93.2% grasp classification accuracy without external sensors.
-
-## License
-
-MIT
+MIT — see [LICENSE](LICENSE). Not a medical device.

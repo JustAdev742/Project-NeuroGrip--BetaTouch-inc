@@ -1,48 +1,105 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "prosthetic-hand-prototype"
-version = "1.0.0"
-description = "AI-assisted prosthetic hand prototype — school showcase inspired by DeGol et al. (EMBC 2016)"
+name = "neurogrip"
+version = "0.1.0"
+description = "Shared-control software stack for an AI-assisted tendon-driven robotic prosthetic hand"
 readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.10"
-authors = [
-    {name = "Student Team"},
-]
-keywords = ["prosthetic", "emg", "computer-vision", "robotics", "raspberry-pi"]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "BetaTouch Inc." }]
+keywords = ["prosthetics", "robotics", "emg", "shared-control", "grasping", "embedded"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 
-dependencies = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.30.0",
-    "numpy>=1.26.0",
-    "opencv-python>=4.10.0",
-    "pyyaml>=6.0.1",
-]
+# The runtime core is deliberately dependency-free (standard library only) so that it
+# can run on constrained targets, in CI, and in simulation without an install step.
+# Every third-party dependency lives behind an optional extra and a guarded import.
+dependencies = []
 
 [project.optional-dependencies]
-vision = ["ultralytics>=8.2.0"]
-hardware = ["adafruit-circuitpython-ads1x15>=2.2.20", "RPi.GPIO>=0.7.1"]
-dev = ["pytest>=8.2.0", "ruff>=0.4.0"]
+vision = ["numpy>=1.26", "opencv-python>=4.9", "onnxruntime>=1.17"]
+hardware = ["pyserial>=3.5"]
+ui = ["pillow>=10.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.10"]
+all = ["neurogrip[vision,hardware,ui,dev]"]
 
 [project.scripts]
-prosthetic-hand = "app.main:main"
+neurogrip = "neurogrip.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc"
+Documentation = "https://github.com/JustAdev742/Project-NeuroGrip--BetaTouch-inc/tree/main/docs"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.ruff]
-target-version = "py310"
-line-length = 120
+[tool.setuptools.package-data]
+neurogrip = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: end-to-end tests that run the full simulated runtime",
+    "slow: tests that take more than a second",
+    "hardware: tests that require physical hardware (skipped by default)",
+]
+
+[tool.ruff]
+target-version = "py311"
+# 100 is the target the code is written to; the allowance leaves room for the
+# occasional long signature or table row rather than forcing an awkward wrap.
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    # Injected factories are passed as defaults deliberately.
+    "B008",
+    # Ternary rewrites hurt readability in control code.
+    "SIM108",
+    # `contextlib.suppress` obscures shutdown paths that must never raise.
+    "SIM105",
+    # Explicit `dict(...)` reads better when building keyword-style defaults.
+    "C408",
+    # `str, Enum` is deliberate: the value is the serialised form, and several
+    # of these round-trip through JSON and the wire protocol.
+    "UP042",
+    # `int(round(x))` states the intent (quantise to an integer) more clearly
+    # than bare `round`, which returns int only for a single argument.
+    "RUF046",
+    # Docstrings and comments use en/em dashes, ×, ° and arrows deliberately.
+    "RUF001", "RUF002", "RUF003",
+    # `zip(a, b)` over five-element finger vectors whose length is guaranteed by
+    # HandPose; `strict=` would add noise without adding safety.
+    "B905",
+    # `SafetyViolation` and `EmergencyStopActive` read better than the -Error
+    # suffix the rule wants, and both derive from NeuroGripError.
+    "N818",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+# The screen definitions are declarative widget tables. One constructor per line
+# reads as a table; wrapping each argument would make the layout harder to see,
+# which defeats the point of the declarative UI layer.
+"src/neurogrip/ui/screens.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["neurogrip"]
+mypy_path = "src"
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

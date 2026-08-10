@@ -1,0 +1,330 @@
+## NeuroGrip — baseline configuration.
+##
+## This file documents every tunable and ships the conservative defaults. Profiles
+## (hardware.toml, simulation.toml) and the per-user file (var/user.toml) are
+## merged on top; the environment (NEUROGRIP__SECTION__KEY) and `--set` win last.
+##
+## Safety note: values in this file may make the device MORE conservative but
+## never less. `fusion.*` overrides are clamped against the built-in floors, and
+## `ai_enabled` cannot be turned on for a mode whose policy disables it.
+
+[system]
+name = "NeuroGrip"
+# Identifier included in logs and telemetry. Set per device.
+device_id = "neurogrip-dev"
+
+[hardware]
+# Master switch: true selects simulated drivers for every peripheral.
+simulate = false
+
+# ---------------------------------------------------------------------------
+# Motor controller
+# ---------------------------------------------------------------------------
+[servo]
+# "microbit" (the reference build) | "esp32" | "emulator" (real driver against
+# the in-process firmware) | "simulated"
+#
+# The micro:bit has no current or position sensing, so contact detection,
+# adaptive grip force and tendon-slack calibration are unavailable on it. The
+# driver declares the missing capabilities rather than reporting zeros that
+# would be mistaken for measurements. See docs/hardware.md.
+driver = "microbit"
+port = "/dev/ttyACM0"
+baud = 115200
+# "auto" detects a PCA9685 servo driver on I2C and falls back to direct pins.
+# Five simultaneous PWM channels is more than micro:bit MicroPython reliably
+# gives you, so a PCA9685 is the practical choice for a whole hand.
+driver_board = "auto"
+rtscts = false
+# ESP32 dev boards reset on DTR/RTS. Leave false so reopening the link does not
+# reboot the controller mid-grasp.
+dtr_reset = false
+# Refuse to start if the controller is missing. The hand is useless without it.
+required = true
+# Telemetry older than this marks the link stale. The micro:bit's MicroPython
+# firmware streams state at 25 Hz, so this is looser than the ESP32 needs.
+state_timeout_s = 0.5
+# Firmware command timeout. If the host stops talking, the firmware safes the
+# actuators by itself. See docs/protocol.md.
+watchdog_ms = 400
+
+# Reopen the link automatically if it drops (loose connector, controller reboot,
+# USB renumbering). Reconnecting restores limits and calibration but never
+# re-energises the actuators — see docs/safety.md.
+reconnect = true
+reconnect_backoff_s = 0.5
+reconnect_max_backoff_s = 8.0
+
+# Hard actuator limits, in normalised closure units per second. Lower than the
+# ESP32 build allows: with no current sensing there is nothing to notice a
+# finger driving into a hard stop, so the mechanism has to survive it unaided
+# and slower motion is what makes that likely.
+max_velocity = 1.2
+max_acceleration = 4.0
+max_current_ma = 900
+max_temperature_c = 65.0
+# Absolute grip-force ceiling in [0, 1]. No mode or plan may exceed this.
+max_force = 0.85
+
+# Where the measured tendon calibration is stored. Produced by
+# `neurogrip calibrate servo`; see docs/hardware.md.
+calibration_path = "var/servo-calibration.json"
+# Identifier for the physical hand, so a calibration file is not silently
+# applied to a different unit with different tendon lengths.
+hand_id = "reference"
+
+# Per-finger servo endpoints. These are the *build spec* — how the hand was
+# assembled — not something the software discovers. Set them once against the
+# mechanism, then run the calibration wizard to measure tendon slack on top.
+# `inverted` is for a servo mounted so that increasing pulse width opens rather
+# than closes the finger.
+[servo.fingers.thumb]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.index]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.middle]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.ring]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+[servo.fingers.pinky]
+min_pulse_us = 1000
+max_pulse_us = 2000
+inverted = false
+
+# ---------------------------------------------------------------------------
+# Motion planning (always clipped to the servo limits above)
+# ---------------------------------------------------------------------------
+[control]
+max_velocity = 1.1
+max_acceleration = 3.5
+max_jerk = 40.0
+position_tolerance = 0.015
+
+# ---------------------------------------------------------------------------
+# EMG
+# ---------------------------------------------------------------------------
+[emg]
+# "serial" | "simulated" | "replay"
+driver = "serial"
+port = "/dev/ttyACM0"
+baud = 460800
+required = true
+sample_rate_hz = 1000.0
+
+# Front-end characteristics, used to convert ADC counts to volts.
+adc_reference_v = 4.096
+adc_bits = 16
+amplifier_gain = 1000.0
+
+# Mains frequency for the notch filter. 50 in most of the world, 60 in the
+# Americas and parts of Asia. Getting this wrong leaves a large artefact.
+mains_hz = 50.0
+band_low_hz = 20.0
+band_high_hz = 400.0
+
+# Envelope timing. Short attack keeps the hand responsive; longer release stops
+# the grip fluttering during a sustained contraction.
+envelope_attack_s = 0.03
+envelope_release_s = 0.15
+
+# Intent timing.
+dwell_s = 0.12
+cancel_dwell_s = 0.04
+release_s = 0.15
+
+# Gesture classification: "threshold" (default, explainable) or "linear".
+classifier = "threshold"
+model_path = ""
+
+# Activation thresholds in [0, 1] after calibration.
+onset_threshold = 0.22
+offset_threshold = 0.12
+co_contraction_threshold = 0.35
+
+calibration_path = "var/calibration.json"
+auto_recalibrate = true
+
+# Electrode layout. One flexor and one extensor channel are required.
+[[emg.channels]]
+index = 0
+name = "Flexor"
+role = "flexor"
+site = "flexor digitorum superficialis"
+full_scale_v = 3.3
+
+[[emg.channels]]
+index = 1
+name = "Extensor"
+role = "extensor"
+site = "extensor digitorum communis"
+full_scale_v = 3.3
+
+# ---------------------------------------------------------------------------
+# Camera
+# ---------------------------------------------------------------------------
+[camera]
+enabled = true
+driver = "opencv"
+device = 0
+width = 640
+height = 480
+fps = 30.0
+pixel_format = "rgb888"
+autofocus = true
+# Horizontal field of view, used by the monocular depth estimator.
+fov_deg = 62.0
+# The hand works without a camera, so this is not required.
+required = false
+
+# ---------------------------------------------------------------------------
+# Vision
+# ---------------------------------------------------------------------------
+# Replay a recorded perception stream instead of running a model. Used for
+# regression testing and for reproducing field reports; see docs/vision.md.
+[vision.replay]
+path = "data/vision/reference-bottle.jsonl"
+loop = true
+repeat = 1
+
+[vision]
+enabled = true
+# "hggd_mcu" (default) | "onnx_detector" | "mock" | "null"
+backend = "hggd_mcu"
+max_result_age_s = 0.5
+tracker_iou = 0.3
+tracker_max_missed = 5
+
+[vision.hggd_mcu]
+model_path = "models/hggd_mcu/hggd_mcu_int8.onnx"
+input_width = 160
+input_height = 128
+stride = 8
+angle_bins = 12
+score_threshold = 0.35
+nms_distance = 0.12
+max_grasps = 8
+class_threshold = 0.30
+providers = ["CPUExecutionProvider"]
+threads = 2
+
+[vision.onnx_detector]
+model_path = "models/detector/detector.onnx"
+input_width = 320
+input_height = 320
+score_threshold = 0.35
+
+# ---------------------------------------------------------------------------
+# AI
+# ---------------------------------------------------------------------------
+[ai]
+# Planner chain, in priority order. The composite always has a safe default
+# below the last entry, so this list can never leave the user without motion.
+planners = ["hggd", "heuristic"]
+min_plan_confidence = 0.35
+model_root = "models"
+
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+[modes]
+default = "ai_assist"
+# Minimum time in a mode before another change is accepted.
+min_dwell_s = 1.0
+
+# ---------------------------------------------------------------------------
+# Runtime rates (Hz)
+# ---------------------------------------------------------------------------
+[runtime]
+control_hz = 200.0
+emg_hz = 200.0
+decision_hz = 100.0
+vision_hz = 20.0
+ui_hz = 15.0
+diagnostics_hz = 2.0
+
+# ---------------------------------------------------------------------------
+# Safety
+# ---------------------------------------------------------------------------
+# Periodic verification that the emergency stop still works. Between manual
+# `neurogrip test estop` runs the stop path can break with no symptom at all;
+# these checks catch that. See docs/safety.md.
+[safety.estop_check]
+# Rehearse the signalling path (no effect on the hand) this often.
+rehearsal_interval_s = 30.0
+# Prove the hardware path by actually cutting drive. Only runs when the hand is
+# open, idle and holding nothing, so a passing check is invisible.
+proof_enabled = true
+proof_interval_s = 21600.0   # 6 hours
+# Verify that something can still *cause* a stop: rule registration, watchdog
+# delivery, the STOP button's wiring. A stop nothing can trigger fails as
+# quietly as one that triggers and does nothing.
+trigger_probe_interval_s = 300.0
+
+[safety.watchdogs]
+control_s = 0.1
+emg_s = 0.3
+decision_s = 0.2
+vision_s = 2.0
+ui_s = 3.0
+
+# ---------------------------------------------------------------------------
+# User interface
+# ---------------------------------------------------------------------------
+[ui]
+enabled = true
+# "tk" for the touchscreen, "text" for a terminal, "null" for headless.
+renderer = "tk"
+width = 800
+height = 480
+fullscreen = true
+theme = "dark"
+
+[ui.accessibility]
+font_scale = 1.0
+reduce_motion = false
+high_contrast = false
+show_numeric_values = true
+haptics = true
+message_duration_s = 4.0
+audio_cues = false
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+[training]
+stats_path = "var/training.json"
+
+# ---------------------------------------------------------------------------
+# Logging and telemetry
+# ---------------------------------------------------------------------------
+[logging]
+level = "INFO"
+console = true
+file = "var/logs/neurogrip.jsonl"
+max_bytes = 4000000
+backups = 3
+buffer = 1000
+
+[telemetry]
+# The black-box recorder keeps recent events in memory and writes them out when
+# something goes wrong. Leave this on.
+blackbox = true
+blackbox_dir = "var/blackbox"
+# Continuous telemetry is for development and clinical review; off by default.
+enabled = false
+path = "var/telemetry/session.jsonl"
+
+[power]
+node = "/sys/class/power_supply/BAT0"
