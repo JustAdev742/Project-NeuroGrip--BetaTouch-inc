@@ -1,16 +1,28 @@
 # NeuroGrip Protocol (NGP) v1
 
-Host ⇄ ESP32 motor controller, over USB-CDC at 921600 baud.
+Host ⇄ motor controller, over USB serial.
 
-Two implementations must stay byte-for-byte compatible:
+Three implementations must stay byte-for-byte compatible:
 
-| Side | File |
-|---|---|
-| Host | `src/neurogrip/hal/protocol.py` |
-| Firmware | `firmware/esp32_motor_controller/include/ngp_protocol.h` |
+| Side | File | Baud |
+|---|---|---|
+| Host | `src/neurogrip/hal/protocol.py` | — |
+| micro:bit firmware | `firmware/microbit_servo_controller/main.py` | 115200 |
+| ESP32 firmware | `firmware/esp32_motor_controller/include/ngp_protocol.h` | 921600 |
 
 `tests/unit/test_hal_and_protocol.py` pins the encodings and is the arbiter when
-the two disagree.
+they disagree.
+
+Both boards speak the same protocol deliberately: the host driver, the framing,
+the CRC checking and the watchdog contract are shared code rather than parallel
+implementations, and shared code is code both boards' tests exercise.
+
+The micro:bit implements a subset — `HOME` and `REBOOT` answer
+`ERROR/UNSUPPORTED`, and `SET_FORCE` is accepted and ignored because force
+control needs current sensing that board has not got. Its firmware loop runs at
+50 Hz (one servo frame), so the host driver coalesces target writes down to that
+rate; events — stop, enable, disable, calibration — are never coalesced.
+`firmware/microbit_servo_controller/README.md` has the full table.
 
 ## Frame format
 

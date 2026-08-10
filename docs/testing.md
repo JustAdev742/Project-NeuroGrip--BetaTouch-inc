@@ -178,9 +178,16 @@ pytest -m hardware        # requires a connected device
 ```
 
 For manual bring-up verification, use the tools rather than the test suite — they
-report measurements, not just pass/fail:
+report measurements, not just pass/fail.
+
+`test servos` is the one for a hand that is not built yet: bare servos on the
+bench, swept one at a time so you can identify the channels, then together so an
+undersized supply shows itself. `test range` is the opposite — an acceptance test
+for a *finished* hand, which fails everything on bare servos because there are no
+tendons to travel.
 
 ```bash
+neurogrip test servos     # sweep each servo, then all five        ⚠ moves
 neurogrip test link       # latency distribution, loss, framing errors
 neurogrip test range      # per-finger travel and cross-coupling   ⚠ moves
 neurogrip test estop      # the stop, the de-energise, the latch   ⚠ moves

@@ -1272,3 +1272,157 @@ class TestTriggerAudit:
 
         assert check.status.value == "failed"
         assert check.failures == 1, "the transition is announced, the state is not"
+
+
+class TestServoSweep:
+    """The bench test for a hand that is not built yet.
+
+    Distinct from RangeTester, which is an acceptance test for a finished hand
+    and fails everything when run on five bare servos.
+    """
+
+    def test_sweeps_every_channel_individually_and_together(self, clock: SimulatedClock):
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+
+        controller, _ = _hand(clock)
+        report = ServoSweepTest(controller, clock, cycles=1, hold_s=0.1).run()
+
+        assert report.ok, report.describe()
+        # Five individual sweeps, identified by name, plus the all-together one.
+        names = [r.name for r in report.results]
+        for finger in Finger:
+            assert f"{finger.name.title()} servo" in names
+        assert "All servos together" in names
+
+    def test_a_channel_that_does_not_move_fails(self, clock: SimulatedClock):
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+        from neurogrip.hal.servo.simulated import ContactModel
+
+        controller, servo = _hand(clock)
+        # A disconnected signal wire: the finger never leaves zero.
+        servo.set_contact(ContactModel(blocked_at=[1.0, 1.0, 0.0, 1.0, 1.0]))
+        report = ServoSweepTest(controller, clock, cycles=1, hold_s=0.1).run()
+
+        assert not report.ok
+        middle = next(r for r in report.results if r.name.startswith("Middle"))
+        assert middle.outcome is TestOutcome.FAIL
+        assert "did not move" in middle.message
+        # The working channels still pass — the operator needs to know which.
+        index = next(r for r in report.results if r.name.startswith("Index"))
+        assert index.outcome is TestOutcome.PASS
+
+    def test_a_subset_of_fingers_can_be_swept(self, clock: SimulatedClock):
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+
+        controller, _ = _hand(clock)
+        report = ServoSweepTest(controller, clock, cycles=1, hold_s=0.1).run(
+            (Finger.THUMB, Finger.INDEX)
+        )
+        assert report.ok
+        assert len(report.results) == 3  # two channels plus the combined sweep
+
+    def test_partial_travel_is_respected(self, clock: SimulatedClock):
+        """A partly assembled hand may collide at full closure."""
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+
+        controller, _ = _hand(clock)
+        report = ServoSweepTest(
+            controller, clock, cycles=1, hold_s=0.1, travel=0.4
+        ).run((Finger.INDEX,))
+
+        result = next(r for r in report.results if r.name.startswith("Index"))
+        assert result.measurements["travelled"] == pytest.approx(0.4, abs=0.05)
+
+    def test_says_so_when_positions_are_not_measured(self, clock: SimulatedClock):
+        """On a board with no feedback, a pass must not imply the servo moved."""
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+
+        controller, _ = _hand(clock)
+        report = ServoSweepTest(
+            controller, clock, cycles=1, hold_s=0.1, has_feedback=False
+        ).run((Finger.INDEX,))
+
+        assert any("no position feedback" in note for note in report.notes)
+        assert any("commanded" in r.message for r in report.results)
+
+    def test_refuses_to_run_while_stopped(self, clock: SimulatedClock):
+        from neurogrip.diagnostics.bringup import ServoSweepTest
+
+        controller, _ = _hand(clock)
+        controller.emergency_stop("test")
+        controller.tick()
+        report = ServoSweepTest(controller, clock).run()
+
+        assert not report.ok
+        assert "emergency stop" in report.results[0].message
+
+
+class TestMicrobitController:
+    """The micro:bit build: same protocol, materially fewer senses."""
+
+    def _bus(self, clock):
+        from neurogrip.hal.servo.emulator import Esp32Emulator
+        from neurogrip.hal.servo.microbit import MicrobitServoBus
+        from neurogrip.hal.servo.simulated import SimulatedServoBus
+        from neurogrip.hal.transport.loopback import LoopbackTransport
+
+        plant = SimulatedServoBus(clock)
+        emulator = Esp32Emulator(clock, plant=plant, watchdog_ms=400)
+        transport = LoopbackTransport(emulator, clock, latency=0.001)
+        return MicrobitServoBus(transport, clock), plant
+
+    def test_speaks_the_same_protocol(self, clock: SimulatedClock):
+        """The whole reason it is a subclass rather than a parallel driver."""
+        bus, _ = self._bus(clock)
+        bus.open()
+        for _ in range(40):
+            clock.advance(0.005)
+            bus.read_state()
+        assert bus.read_state().comms_ok
+
+    def test_does_not_claim_senses_it_has_not_got(self, clock: SimulatedClock):
+        from neurogrip.hal.base import DeviceCapability
+
+        bus, _ = self._bus(clock)
+        capabilities = bus.info().capabilities
+
+        assert DeviceCapability.CURRENT_SENSING not in capabilities
+        assert DeviceCapability.POSITION_FEEDBACK not in capabilities
+        assert "microbit" in bus.info().driver
+
+    def test_target_writes_are_coalesced_to_the_firmware_rate(
+        self, clock: SimulatedClock
+    ):
+        """200 Hz of commands would swamp MicroPython at 115200 baud."""
+        bus, _ = self._bus(clock)
+        bus.open()
+        bus.enable()
+
+        for _ in range(200):  # one second of a 200 Hz control loop
+            clock.advance(0.005)
+            bus.write_targets(HandPose.uniform(0.5))
+
+        # 50 Hz for a second, give or take the first write.
+        assert 45 <= bus.target_writes <= 55
+        assert bus.coalesced_writes >= 140
+
+    def test_an_emergency_stop_is_never_coalesced(self, clock: SimulatedClock):
+        """Events are not samples. Dropping one would be a safety bug."""
+        bus, _ = self._bus(clock)
+        bus.open()
+        bus.enable()
+        bus.write_targets(HandPose.uniform(0.5))
+
+        # Immediately after a target write, inside the coalescing window.
+        bus.emergency_stop()
+        for _ in range(20):
+            clock.advance(0.005)
+            bus.read_state()
+        assert bus.read_state().estop
+
+    def test_calibration_refuses_without_current_sensing(self, clock: SimulatedClock):
+        """Otherwise it reports every tendon as broken."""
+        controller, _ = _hand(clock)
+        wizard = ServoCalibrationWizard(controller, clock, has_current_sensing=False)
+        with pytest.raises(CalibrationError, match="no current sensing"):
+            wizard.start()

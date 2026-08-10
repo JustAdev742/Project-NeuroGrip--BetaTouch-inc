@@ -290,10 +290,16 @@ class ServoCalibrationWizard:
         stall_current_ma: int = 140,
         stall_dwell_s: float = 0.35,
         progress_epsilon: float = 0.004,
+        has_current_sensing: bool = True,
     ) -> None:
         self._controller = controller
         self._clock = clock
         self._base = base or ServoCalibrationSet()
+        #: Take-up detection *is* a current measurement. On a controller without
+        #: current sensing this procedure cannot work, and the failure would be
+        #: quiet and misleading: every finger would read as never going taut and
+        #: be reported as needing re-stringing. Refusing is the honest answer.
+        self._has_current_sensing = has_current_sensing
         #: Closure units per second during the creep phases.
         self._creep_rate = creep_rate
         self._settle_s = settle_s
@@ -329,6 +335,13 @@ class ServoCalibrationWizard:
         Raises :class:`~neurogrip.core.errors.CalibrationError` if the hand is
         not in a state where it may be moved.
         """
+        if not self._has_current_sensing:
+            raise CalibrationError(
+                "this motor controller has no current sensing, and tendon take-up "
+                "can only be detected as a rise in motor current. Set the slack "
+                "figures in [servo.fingers.*] by hand, or calibrate the hand on a "
+                "controller that measures current."
+            )
         state = self._controller.state
         if state.estop:
             raise CalibrationError("cannot calibrate while the emergency stop is latched")

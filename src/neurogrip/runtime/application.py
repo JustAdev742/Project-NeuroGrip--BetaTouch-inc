@@ -53,6 +53,7 @@ from ..emg.pipeline import EmgPipeline, PipelineSettings
 from ..emg.recorder import AutoRecalibrator
 from ..fusion.fusion import DecisionFusion
 from ..fusion.policy import policy_for_mode
+from ..hal.base import DeviceCapability
 from ..hal.factory import HardwareBundle, HardwareFactory
 from ..hal.servo.base import ServoLimits
 from ..modes.base import ModeContext
@@ -482,7 +483,14 @@ def build_application(
         ),
         calibration=[servo_calibration.get(f) for f in Finger],
     )
-    servo_wizard = ServoCalibrationWizard(controller, clock, base=servo_calibration)
+    servo_wizard = ServoCalibrationWizard(
+        controller,
+        clock,
+        base=servo_calibration,
+        has_current_sensing=(
+            DeviceCapability.CURRENT_SENSING in hardware.servo_bus.info().capabilities
+        ),
+    )
 
     # Cut drive the instant the stop is triggered, on whatever thread triggered
     # it. `decision_tick` also checks, but that is a 100 Hz backstop for stops

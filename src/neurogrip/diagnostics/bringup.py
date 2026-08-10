@@ -12,9 +12,14 @@ diagnose from normal operation:
 * :class:`LinkTester` — the link is *nominally* working but marginal. Bad crimp,
   cable too long, baud rate too high, ground loop. Shows up as intermittent
   motion glitches that look like software bugs.
+* :class:`ServoSweepTest` — the bench test for a hand that is not built yet.
+  Moves each servo in turn and then all five together, so a human can confirm
+  the wiring, identify which servo is on which channel, and see whether the
+  supply survives five starting at once.
 * :class:`RangeTester` — a finger does not reach the travel the software assumes.
   Wrong horn spline, tendon routed through the wrong guide, servo mounted
-  mirrored. Shows up as a grip that never closes properly on one digit.
+  mirrored. Shows up as a grip that never closes properly on one digit. Assumes
+  a *finished* hand; use ``ServoSweepTest`` before the tendons are strung.
 * :class:`EstopTester` — the emergency stop path is not actually connected. Shows
   up when someone needs it.
 
@@ -31,11 +36,11 @@ from dataclasses import dataclass, field
 from ..core.clock import Clock
 from ..core.logging import get_logger
 from ..core.ringbuffer import RunningStats, percentile
-from ..core.types import Finger, HandPose
+from ..core.types import Finger, HandPose, clamp
 from ..hal.servo.base import ServoBus
 from .selftest import TestOutcome, TestResult
 
-__all__ = ["EstopTester", "LinkTester", "RangeTester", "ToolReport"]
+__all__ = ["EstopTester", "LinkTester", "RangeTester", "ServoSweepTest", "ToolReport"]
 
 log = get_logger(__name__)
 
@@ -355,6 +360,237 @@ class RangeTester:
                 still_since = now
             elif now - still_since >= self._settle_s:
                 return
+
+
+class ServoSweepTest:
+    """Drives every servo through its full range so you can watch it.
+
+    Distinct from :class:`RangeTester`, and the difference matters. RangeTester
+    is an *acceptance* test for a finished hand: it measures travel against a
+    threshold and flags cross-coupling between tendons. Run it on five bare
+    servos sitting on a bench and it fails everything, because there are no
+    tendons to travel and nothing to couple.
+
+    This is the bench test for a hand that is not built yet. Its job is to make
+    each servo move, one at a time and then together, so a human can confirm the
+    wiring, identify which physical servo is on which channel, check the
+    direction of travel, and see whether the supply holds up when all five move
+    at once. It reports what it commanded and what came back, and it only
+    *fails* a channel that did not move at all.
+
+    That last distinction is the point. On a board without position feedback —
+    the micro:bit — "what came back" is the firmware's own open-loop estimate, so
+    the test cannot tell you the servo physically moved. It says so rather than
+    reporting a pass that means nothing. Watching the hardware is the
+    measurement; this tool is what makes the hardware move in a defined,
+    repeatable order while you do.
+    """
+
+    def __init__(
+        self,
+        controller,
+        clock: Clock,
+        *,
+        cycles: int = 1,
+        hold_s: float = 0.6,
+        travel: float = 1.0,
+        force: float = 0.25,
+        speed: float = 0.5,
+        settle_s: float = 0.2,
+        timeout_s: float = 8.0,
+        has_feedback: bool = True,
+    ) -> None:
+        self._controller = controller
+        self._clock = clock
+        self._cycles = max(1, cycles)
+        #: Pause at each end of travel, so a human can see where it stopped.
+        self._hold_s = hold_s
+        #: Fraction of full closure to sweep. Lower it when the mechanism is
+        #: partly assembled and full travel would collide with something.
+        self._travel = clamp(travel, 0.05, 1.0)
+        self._force = force
+        self._speed = speed
+        self._settle_s = settle_s
+        self._timeout_s = timeout_s
+        #: False on a board that reports commanded position rather than measured.
+        self._has_feedback = has_feedback
+
+    def run(self, fingers: tuple[Finger, ...] = tuple(Finger)) -> ToolReport:
+        state = self._controller.state
+        if state.estop:
+            return ToolReport(
+                tool="servos",
+                results=(
+                    TestResult(
+                        name="Precondition",
+                        outcome=TestOutcome.FAIL,
+                        message="emergency stop is latched",
+                        remedy="Acknowledge the stop before running a motion test.",
+                    ),
+                ),
+            )
+        if not state.enabled:
+            self._controller.enable()
+
+        results: list[TestResult] = []
+        notes: list[str] = [
+            f"{self._cycles} cycle(s) to {self._travel:.0%} closure "
+            f"at {self._speed:.0%} speed"
+        ]
+        if not self._has_feedback:
+            notes.append(
+                "this controller has no position feedback — positions below are "
+                "the firmware's open-loop estimate. Watch the hardware."
+            )
+
+        # One at a time first: this is what tells you which servo is on which
+        # channel, and it is impossible to work out from an all-together sweep.
+        for finger in fingers:
+            results.append(self._sweep_one(finger))
+
+        results.append(self._sweep_all(fingers))
+
+        self._move(HandPose.open_hand(), "returning to open")
+        return ToolReport(tool="servos", results=tuple(results), notes=tuple(notes))
+
+    # -- individual -----------------------------------------------------------
+
+    def _sweep_one(self, finger: Finger) -> TestResult:
+        name = finger.name.title()
+        self._move(HandPose.open_hand(), f"opening before {name.lower()}")
+        opened = self._controller.state.pose[finger]
+
+        reached: list[float] = []
+        for _ in range(self._cycles):
+            closed_pose = HandPose.open_hand().masked(
+                [finger], HandPose.uniform(self._travel)
+            )
+            self._move(closed_pose, f"closing {name.lower()}")
+            reached.append(self._controller.state.pose[finger])
+            self._dwell()
+
+            self._move(HandPose.open_hand(), f"opening {name.lower()}")
+            self._dwell()
+
+        returned = self._controller.state.pose[finger]
+        travelled = max(reached, default=0.0) - opened
+
+        if travelled < 0.05:
+            return TestResult(
+                name=f"{name} servo",
+                outcome=TestOutcome.FAIL,
+                message=f"did not move (commanded {self._travel:.2f}, reached {travelled:.2f})",
+                measurements={"travelled": round(travelled, 3)},
+                remedy=(
+                    "Check the signal wire, the servo's power, and that the "
+                    "channel is the one you think it is."
+                ),
+            )
+        if returned > 0.1:
+            return TestResult(
+                name=f"{name} servo",
+                outcome=TestOutcome.WARN,
+                message=f"swept {travelled:.2f} but did not return to open ({returned:.2f})",
+                measurements={"travelled": round(travelled, 3), "returned": round(returned, 3)},
+                remedy="The servo may be binding, or the travel range is wrong for it.",
+            )
+        return TestResult(
+            name=f"{name} servo",
+            outcome=TestOutcome.PASS,
+            message=f"swept 0.00 → {travelled:.2f} → {returned:.2f}"
+            + ("" if self._has_feedback else " (commanded)"),
+            measurements={"travelled": round(travelled, 3)},
+        )
+
+    # -- all together ---------------------------------------------------------
+
+    def _sweep_all(self, fingers: tuple[Finger, ...]) -> TestResult:
+        """The one that finds an undersized power supply.
+
+        Five servos starting together draw their inrush at the same instant. A
+        supply that copes with one at a time will brown out here, and the symptom
+        is the controller resetting rather than anything the software can see —
+        which is exactly why a human needs to be watching.
+        """
+        self._move(HandPose.open_hand(), "opening all")
+        before = self._controller.state
+
+        worst = 1.0
+        for _ in range(self._cycles):
+            target = HandPose.from_iterable(
+                self._travel if f in fingers else 0.0 for f in Finger
+            )
+            self._move(target, "closing all")
+            self._dwell()
+            pose = self._controller.state.pose
+            worst = min(worst, min(pose[f] for f in fingers))
+            self._move(HandPose.open_hand(), "opening all")
+            self._dwell()
+
+        after = self._controller.state
+        if not after.comms_ok:
+            return TestResult(
+                name="All servos together",
+                outcome=TestOutcome.FAIL,
+                message="lost the controller during the sweep",
+                remedy=(
+                    "Almost always an undersized supply: five servos starting "
+                    "together brown out the board. Use a separate 5 V supply "
+                    "with a common ground."
+                ),
+            )
+        if worst < 0.05:
+            return TestResult(
+                name="All servos together",
+                outcome=TestOutcome.FAIL,
+                message=f"at least one channel did not move (worst {worst:.2f})",
+                remedy="Re-run the individual sweeps to find which.",
+            )
+        return TestResult(
+            name="All servos together",
+            outcome=TestOutcome.PASS,
+            message=f"all {len(fingers)} moved together, worst {worst:.2f}",
+            measurements={
+                "worst": round(worst, 3),
+                "voltage_before": round(before.bus_voltage_v, 2),
+                "voltage_after": round(after.bus_voltage_v, 2),
+            },
+        )
+
+    # -- motion ---------------------------------------------------------------
+
+    def _move(self, pose: HandPose, description: str) -> None:
+        self._controller.move_to(
+            pose,
+            force=self._force,
+            speed=self._speed,
+            source="servo-sweep",
+            description=description,
+        )
+        self._settle()
+
+    def _settle(self) -> None:
+        """Run the control loop until the hand stops moving, or time out."""
+        deadline = self._clock.monotonic() + self._timeout_s
+        still_since: float | None = None
+        while self._clock.monotonic() < deadline:
+            self._controller.tick()
+            self._clock.sleep(0.005)
+            now = self._clock.monotonic()
+            if self._controller.state.moving:
+                still_since = None
+                continue
+            if still_since is None:
+                still_since = now
+            elif now - still_since >= self._settle_s:
+                return
+
+    def _dwell(self) -> None:
+        """Hold at the end of travel so a human can see where it stopped."""
+        deadline = self._clock.monotonic() + self._hold_s
+        while self._clock.monotonic() < deadline:
+            self._controller.tick()
+            self._clock.sleep(0.005)
 
 
 class EstopTester:

@@ -33,6 +33,7 @@ from .emg.simulated import DEFAULT_CHANNELS, SimulatedEmgSource
 from .servo.base import ServoBus, ServoLimits
 from .servo.emulator import Esp32Emulator
 from .servo.esp32 import Esp32ServoBus
+from .servo.microbit import MicrobitServoBus
 from .servo.simulated import SimulatedServoBus
 from .system import (
     ConnectivityProbe,
@@ -128,7 +129,7 @@ class HardwareFactory:
         )
         limits.validate()
 
-        driver = "simulated" if simulate else section.get_str("driver", "esp32")
+        driver = "simulated" if simulate else section.get_str("driver", "microbit")
 
         if driver == "simulated":
             plant = SimulatedServoBus(self._clock, limits=limits)
@@ -159,15 +160,29 @@ class HardwareFactory:
                 plant,
             )
 
-        if driver == "esp32":
+        if driver in ("esp32", "microbit"):
             transport = self._build_transport(section)
-            bus = Esp32ServoBus(
-                transport,
-                self._clock,
-                limits=limits,
-                watchdog_ms=section.get_int("watchdog_ms", 300),
-                state_timeout=section.get_float("state_timeout_s", 0.25),
-            )
+            if driver == "microbit":
+                bus = MicrobitServoBus(
+                    transport,
+                    self._clock,
+                    limits=limits,
+                    watchdog_ms=section.get_int("watchdog_ms", 400),
+                    state_timeout=section.get_float("state_timeout_s", 0.5),
+                    driver_board=section.get_str("driver_board", "auto"),
+                )
+                notes.append(
+                    "servo: micro:bit controller — no current or position sensing, "
+                    "so contact detection and tendon calibration are unavailable"
+                )
+            else:
+                bus = Esp32ServoBus(
+                    transport,
+                    self._clock,
+                    limits=limits,
+                    watchdog_ms=section.get_int("watchdog_ms", 300),
+                    state_timeout=section.get_float("state_timeout_s", 0.25),
+                )
             if isinstance(transport, ReconnectingTransport):
                 # Replaying limits and calibration is the driver's job, but only
                 # the transport knows when the link came back.

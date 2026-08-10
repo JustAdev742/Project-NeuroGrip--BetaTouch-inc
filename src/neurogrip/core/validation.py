@@ -177,7 +177,7 @@ SYSTEM_RULES: tuple[Rule, ...] = (
     Rule("servo.max_temperature_c", float, 30.0, 120.0),
     Rule("servo.watchdog_ms", int, 50, 2000,
          remedy="the firmware safes the drive after this long without a command"),
-    Rule("servo.driver", str, choices=("esp32", "emulator", "simulated")),
+    Rule("servo.driver", str, choices=("microbit", "esp32", "emulator", "simulated")),
     Rule("servo.baud", int, 9600, 4_000_000),
     # -- host control ---------------------------------------------------------
     Rule("control.max_velocity", float, 0.1, 10.0),
@@ -463,7 +463,7 @@ _ADDITIONAL_KNOWN_PATHS: tuple[str, ...] = (
     "servo.port", "servo.rtscts", "servo.dtr_reset", "servo.required",
     "servo.state_timeout_s", "servo.emulator_latency_s", "servo.calibration_path",
     "servo.hand_id", "servo.reconnect", "servo.reconnect_backoff_s",
-    "servo.reconnect_max_backoff_s",
+    "servo.reconnect_max_backoff_s", "servo.driver_board",
     "control.max_jerk",
     "emg.driver", "emg.port", "emg.baud", "emg.required", "emg.classifier",
     "emg.model_path", "emg.calibration_path", "emg.auto_recalibrate",

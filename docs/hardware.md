@@ -9,7 +9,9 @@ this.
 | Part | Reference choice | Notes |
 |---|---|---|
 | Host | Raspberry Pi 4B 4 GB / CM4 | 64-bit Linux. The CM4 is preferred for the socket-mounted form factor. |
-| Motor controller | ESP32-S3-DevKitC-1 | Second USB peripheral, larger SRAM |
+| Motor controller | **BBC micro:bit v2 + edge breakout board** | The reference build. See "Motor controller" below for what it costs you. |
+| Servo driver | PCA9685 16-channel, I2C | Needed for five channels; micro:bit MicroPython cannot reliably PWM that many pins |
+| Motor controller (alternative) | ESP32-S3-DevKitC-1 | Restores current sensing, and with it contact detection and tendon calibration |
 | Actuators | 5 × metal-gear micro servo, ≥ 2.5 kg·cm | Metal gears are not optional; nylon strips under tendon load |
 | Tendon | 0.6 mm braided fishing line, ≥ 20 kg | Braided, not monofilament: monofilament creeps and the calibration drifts |
 | Return | 0.4 mm spring steel per finger | Passive extension; also what safes the hand when power is cut |
@@ -20,7 +22,47 @@ this.
 | Display | 800×480 capacitive touchscreen | |
 | Battery | 2S Li-ion, 2600 mAh, with a protection board | ~7.4 V nominal, 6.0 V empty, 8.4 V full |
 | Regulation | 5 V 3 A buck for the servos, separate 5 V for the Pi | **Separate rails.** Servo inrush browns out an SBC sharing a rail. |
-| Current sensing | 5 × INA181 + 0.1 Ω shunt | Contact detection depends on this |
+| Current sensing | 5 × INA181 + 0.1 Ω shunt | **ESP32 build only.** Contact detection depends on this |
+
+## Motor controller
+
+The reference build uses a **BBC micro:bit v2 in an edge breakout board**. It is
+the right choice for getting a hand moving: cheap, hard to destroy, flashable by
+dragging a file onto a USB drive, and with a MicroPython firmware that anyone can
+read and change. `firmware/microbit_servo_controller/README.md` has the wiring,
+the pin map and the bring-up sequence.
+
+It costs three things, and they are not cosmetic.
+
+**No current sensing.** The ESP32 board carries a shunt amplifier per finger.
+The micro:bit has none, so anything that infers from motor current is gone:
+
+| Feature | micro:bit | ESP32 |
+|---|---|---|
+| Contact detection | ✗ | ✔ |
+| Adaptive grip force | ✗ | ✔ |
+| Tendon-slack calibration | ✗ (`neurogrip calibrate servo` refuses) | ✔ |
+| Stall / servo-timeout detection | ✗ | ✔ |
+| Position feedback | ✗ open-loop estimate | ✔ |
+| Bus-voltage measurement | ✗ reported as 0 | ✔ |
+
+`MicrobitServoBus` declares the missing capabilities rather than reporting zeros,
+and the layers above check the capability instead of assuming it. A zero that
+means "no sensor" must never be read as a zero that means "no load" — which is
+why the calibration wizard refuses outright rather than reporting every tendon as
+never going taut.
+
+**It cannot drive five servos from its own pins.** micro:bit MicroPython limits
+simultaneous PWM outputs — commonly documented as three. Use a PCA9685 on I2C
+(P19/P20). The firmware auto-detects one and falls back to direct pins with a
+warning; direct drive is fine for one to three servos on the bench.
+
+**It cannot power them either.** The 3V pad supplies about 190 mA; one SG90
+stalls at roughly 700 mA. Use a separate 5 V supply and join the grounds. This is
+the single most common way to make a micro:bit servo project fail, and the
+symptom — the board resetting mid-motion — looks like a software fault.
+
+Switch to the ESP32 with `servo.driver = "esp32"`; nothing above the HAL changes.
 
 ## Power
 

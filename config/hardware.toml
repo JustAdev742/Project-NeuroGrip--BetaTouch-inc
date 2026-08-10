@@ -4,26 +4,37 @@
 ##
 ## Reference platform (see docs/hardware.md):
 ##   host    Raspberry Pi 4B / CM4, 64-bit Linux
-##   motors  5 × metal-gear micro servo, tendon-driven, ESP32-S3 controller
-##   EMG     2-channel differential front end → ADS1256 → ESP32 → USB CDC
+##   motors  5 × metal-gear micro servo, tendon-driven
+##   control BBC micro:bit v2 + edge breakout + PCA9685 servo driver
+##   EMG     2-channel differential front end → ADS1256 → USB CDC
 ##   camera  Pi Camera Module 3 (or any V4L2 device)
 ##   display 800×480 capacitive touchscreen
+##
+## For the ESP32 controller instead — which adds current sensing, and with it
+## contact detection, adaptive grip force and tendon calibration — see the
+## commented block below.
 
 [hardware]
 simulate = false
 
 [servo]
-driver = "esp32"
-port = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit-if00"
-baud = 921600
+driver = "microbit"
+port = "/dev/serial/by-id/usb-ARM_BBC_micro:bit_CMSIS-DAP-if01"
+baud = 115200
 required = true
-watchdog_ms = 250
-state_timeout_s = 0.2
+# Looser than the ESP32 needs: MicroPython streams state at 25 Hz.
+watchdog_ms = 400
+state_timeout_s = 0.5
+# "auto" detects a PCA9685 on I2C and falls back to direct pins.
+driver_board = "auto"
 
 # Tuned for the reference actuators. Raising these is a mechanical decision, not
 # a software one — see docs/hardware.md before changing them.
-max_velocity = 2.0
-max_acceleration = 8.0
+#
+# Lower than the ESP32 build allows: with no current sensing nothing notices a
+# finger driving into a hard stop, so the mechanism has to survive it unaided.
+max_velocity = 1.2
+max_acceleration = 4.0
 max_current_ma = 900
 max_temperature_c = 65.0
 max_force = 0.85
@@ -80,3 +91,27 @@ file = "var/logs/neurogrip.jsonl"
 
 [telemetry]
 blackbox = true
+
+# ---------------------------------------------------------------------------
+# ESP32 controller — uncomment this block and comment out [servo] above.
+#
+# Adds per-finger current sensing, and with it contact detection, adaptive grip
+# force, stall detection and tendon-slack calibration. Everything above the HAL
+# is unchanged; only these settings and the flashed firmware differ.
+#
+# [servo]
+# driver = "esp32"
+# port = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit-if00"
+# baud = 921600
+# required = true
+# watchdog_ms = 250
+# state_timeout_s = 0.2
+# max_velocity = 2.0
+# max_acceleration = 8.0
+# max_current_ma = 900
+# max_temperature_c = 65.0
+# max_force = 0.85
+#
+# [control]
+# max_velocity = 1.8
+# max_acceleration = 7.0

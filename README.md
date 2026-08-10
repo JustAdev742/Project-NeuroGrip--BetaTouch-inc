@@ -197,9 +197,19 @@ neurogrip calibrate emg           # the user's muscles
 neurogrip calibrate servo         # tendon slack, per finger        ⚠ moves
 neurogrip calibrate camera        # field of view from known targets
 
+neurogrip test servos             # sweep every servo               ⚠ moves
 neurogrip test link               # link latency, loss, framing errors
 neurogrip test range              # per-finger travel and coupling  ⚠ moves
 neurogrip test estop              # stop, de-energise, latch        ⚠ moves
+```
+
+`test servos` is the one to use before the hand is built. It sweeps each channel
+individually — the only way to work out which physical servo is on which channel
+— and then all five together, which is what finds an undersized supply.
+
+```bash
+neurogrip test servos --finger thumb --cycles 3    # one channel, repeatedly
+neurogrip test servos --travel 0.4 --speed 0.3     # partly assembled: gentler
 ```
 
 Every subcommand takes `--config`, `--profile`, `--set key=value` and
@@ -218,7 +228,8 @@ deliberately trigger the emergency stop to check it responds. See
 |---|---|
 | Host | Raspberry Pi 4B / CM4, 64-bit Linux |
 | Actuators | 5 × metal-gear micro servo, tendon-driven with high-strength fishing line |
-| Motor controller | ESP32-S3, NGP v1 over USB-CDC at 921600 baud |
+| Motor controller | BBC micro:bit v2 + edge breakout, NGP v1 over USB serial. PCA9685 for five channels |
+| Motor controller (alt.) | ESP32-S3, NGP v1 over USB-CDC at 921600 baud — adds current sensing |
 | EMG | 2-channel differential front end (flexor + extensor) → 24-bit ADC → 1 kHz |
 | Camera | Pi Camera Module 3 or any V4L2 device |
 | Display | 800×480 capacitive touchscreen |

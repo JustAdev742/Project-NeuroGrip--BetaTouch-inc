@@ -165,11 +165,17 @@ grip force, overcurrent, thermal, communication, battery. A test asserts that
 list still matches the rules whose source actually emits `Severity.CRITICAL`, so
 a rule gaining or losing that ability cannot silently fall out of the audit.
 
-**There is no check for a hardware stop button, because this build has none.**
-`EstopSource.HARDWARE_BUTTON` exists as a well-known source string for
-integrators who fit one, and nothing in the reference hardware reads a stop
-input. Pretending to verify a device that does not exist would be worse than
-saying so.
+**The hardware stop button is not audited, because it is on the far side of the
+link.** Both firmwares read one — a dedicated button on the ESP32 board, buttons
+A+B together on the micro:bit — and both engage the stop locally, then tell the
+host with an `ESTOP_ENGAGED` event. That placement is deliberate: it works when
+the host is dead, which is when you most want it to.
+
+The consequence is that `TriggerAudit` cannot reach it. Nothing on the host can
+tell a button that is wired and unpressed from one whose wire has fallen off;
+proving it needs someone to press it. `neurogrip test estop` does not press it
+either. **Test the physical button by pressing it**, at the same intervals you
+would test any other safety device.
 
 Measured window: **5 ms of drive-down, zero finger movement**. The fingers are
 already at rest and the tendon return springs hold them open, so a passing check
@@ -403,6 +409,17 @@ case:
   is checked because it has a reference that can be `None`; the console, the
   bring-up tester and the homing path call the same method directly and are
   covered only by tests.
+- **The hardware stop button is not verifiable from the host.** It is read by the
+  firmware, which is what makes it work when the host is dead, and which is also
+  why nothing on this side can tell a connected button from a disconnected one.
+  Press it periodically; no software here will notice if you do not.
+- **On a micro:bit controller, several safety inputs simply do not exist.**
+  There is no current sensing, so contact detection, adaptive grip force and
+  `ServoTimeoutRule` have nothing to work from, and no position feedback, so
+  tracking error is not measured. The driver declares the missing capabilities
+  and the affected features degrade rather than acting on zeros — but a hand on
+  that controller is running with materially less supervision than one on the
+  ESP32. See [hardware.md](hardware.md).
 
 Anyone taking this beyond a prototype should start with the second and third
 items.

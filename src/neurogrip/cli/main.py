@@ -23,6 +23,7 @@ import sys
 from .. import __version__
 from ..core.clock import SimulatedClock
 from ..core.logging import configure_logging, get_logger
+from ..core.types import Finger
 from ..runtime.application import build_application
 from ..runtime.bootstrap import load_configuration
 
@@ -98,11 +99,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     test.add_argument(
         "tool",
-        choices=("link", "range", "estop", "all"),
-        help="link: communication quality | range: motor travel | estop: emergency stop",
+        choices=("servos", "link", "range", "estop", "all"),
+        help=(
+            "servos: sweep every servo (use this before the hand is built) | "
+            "link: communication quality | range: motor travel on a finished hand | "
+            "estop: emergency stop"
+        ),
     )
     test.add_argument(
         "--samples", type=int, default=200, help="link only: number of round trips"
+    )
+    test.add_argument(
+        "--finger",
+        action="append",
+        default=[],
+        help="servos only: sweep just this finger (repeatable)",
+    )
+    test.add_argument(
+        "--cycles", type=int, default=1, help="servos only: sweeps per channel"
+    )
+    test.add_argument(
+        "--travel",
+        type=float,
+        default=1.0,
+        help="servos only: fraction of full closure to sweep (0.05–1.0)",
+    )
+    test.add_argument(
+        "--speed", type=float, default=0.5, help="servos only: speed scale (0.05–1.0)"
     )
 
     profile_cmd = subparsers.add_parser(
@@ -337,7 +360,6 @@ def _calibrate_camera(args: argparse.Namespace) -> int:
 def _calibrate_servo(args: argparse.Namespace) -> int:
     """Measure per-finger tendon slack by driving each finger under low force."""
     from ..control.servo_calibration import ServoCalibrationPhase
-    from ..core.types import Finger
 
     config = _load(args)
     application = build_application(config)
@@ -443,13 +465,14 @@ def command_test(args: argparse.Namespace) -> int:
     Separate from ``diagnose``, which gates startup and must be quick. These move
     the hand and deliberately trigger the emergency stop, so they are opt-in.
     """
-    from ..diagnostics.bringup import EstopTester, LinkTester, RangeTester
+    from ..diagnostics.bringup import EstopTester, LinkTester, RangeTester, ServoSweepTest
+    from ..hal.base import DeviceCapability
 
     config = _load(args)
     application = build_application(config)
 
-    tools = ("link", "range", "estop") if args.tool == "all" else (args.tool,)
-    needs_motion = any(t in ("range", "estop") for t in tools)
+    tools = ("link", "servos", "range", "estop") if args.tool == "all" else (args.tool,)
+    needs_motion = any(t in ("servos", "range", "estop") for t in tools)
 
     if not application.start(allow_motion=needs_motion):
         print("startup was refused; cannot run bring-up tests", file=sys.stderr)
@@ -462,6 +485,16 @@ def command_test(args: argparse.Namespace) -> int:
                 report = LinkTester(
                     application.hardware.servo_bus, application.clock, samples=args.samples
                 ).run()
+            elif tool == "servos":
+                capabilities = application.hardware.servo_bus.info().capabilities
+                report = ServoSweepTest(
+                    application.controller,
+                    application.clock,
+                    cycles=args.cycles,
+                    travel=args.travel,
+                    speed=args.speed,
+                    has_feedback=DeviceCapability.POSITION_FEEDBACK in capabilities,
+                ).run(_fingers_from(args) or tuple(Finger))
             elif tool == "range":
                 report = RangeTester(application.controller, application.clock).run()
             else:
@@ -480,6 +513,17 @@ def command_test(args: argparse.Namespace) -> int:
     if failures:
         print(f"\n{failures} tool(s) reported failures", file=sys.stderr)
     return 1 if failures else 0
+
+
+def _fingers_from(args: argparse.Namespace) -> tuple:
+    """Parse repeated ``--finger`` options into a tuple, or ``()`` for all."""
+    if not getattr(args, "finger", None):
+        return ()
+    try:
+        return tuple(Finger[name.upper()] for name in args.finger)
+    except KeyError:
+        names = ", ".join(f.name.lower() for f in Finger)
+        raise SystemExit(f"unknown finger; choose from: {names}") from None
 
 
 def command_profile(args: argparse.Namespace) -> int:

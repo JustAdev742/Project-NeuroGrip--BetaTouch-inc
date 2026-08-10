@@ -21,21 +21,32 @@ simulate = false
 # Motor controller
 # ---------------------------------------------------------------------------
 [servo]
-# "esp32" (real hardware) | "emulator" (real driver + in-process firmware) | "simulated"
-driver = "esp32"
-port = "/dev/ttyUSB0"
-baud = 921600
+# "microbit" (the reference build) | "esp32" | "emulator" (real driver against
+# the in-process firmware) | "simulated"
+#
+# The micro:bit has no current or position sensing, so contact detection,
+# adaptive grip force and tendon-slack calibration are unavailable on it. The
+# driver declares the missing capabilities rather than reporting zeros that
+# would be mistaken for measurements. See docs/hardware.md.
+driver = "microbit"
+port = "/dev/ttyACM0"
+baud = 115200
+# "auto" detects a PCA9685 servo driver on I2C and falls back to direct pins.
+# Five simultaneous PWM channels is more than micro:bit MicroPython reliably
+# gives you, so a PCA9685 is the practical choice for a whole hand.
+driver_board = "auto"
 rtscts = false
 # ESP32 dev boards reset on DTR/RTS. Leave false so reopening the link does not
 # reboot the controller mid-grasp.
 dtr_reset = false
 # Refuse to start if the controller is missing. The hand is useless without it.
 required = true
-# Telemetry older than this marks the link stale.
-state_timeout_s = 0.25
+# Telemetry older than this marks the link stale. The micro:bit's MicroPython
+# firmware streams state at 25 Hz, so this is looser than the ESP32 needs.
+state_timeout_s = 0.5
 # Firmware command timeout. If the host stops talking, the firmware safes the
 # actuators by itself. See docs/protocol.md.
-watchdog_ms = 300
+watchdog_ms = 400
 
 # Reopen the link automatically if it drops (loose connector, controller reboot,
 # USB renumbering). Reconnecting restores limits and calibration but never
@@ -44,9 +55,12 @@ reconnect = true
 reconnect_backoff_s = 0.5
 reconnect_max_backoff_s = 8.0
 
-# Hard actuator limits, in normalised closure units per second.
-max_velocity = 2.0
-max_acceleration = 8.0
+# Hard actuator limits, in normalised closure units per second. Lower than the
+# ESP32 build allows: with no current sensing there is nothing to notice a
+# finger driving into a hard stop, so the mechanism has to survive it unaided
+# and slower motion is what makes that likely.
+max_velocity = 1.2
+max_acceleration = 4.0
 max_current_ma = 900
 max_temperature_c = 65.0
 # Absolute grip-force ceiling in [0, 1]. No mode or plan may exceed this.
@@ -93,8 +107,8 @@ inverted = false
 # Motion planning (always clipped to the servo limits above)
 # ---------------------------------------------------------------------------
 [control]
-max_velocity = 1.8
-max_acceleration = 7.0
+max_velocity = 1.1
+max_acceleration = 3.5
 max_jerk = 40.0
 position_tolerance = 0.015
 
